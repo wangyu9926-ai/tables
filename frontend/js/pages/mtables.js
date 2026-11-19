@@ -193,14 +193,9 @@ function renderMtablesVue(container) {
         return String(v).split(/[,，;；\s]+/).filter(function (x) { return x; });
       },
       imgFail: function (u) {
-        // 网络抖动自动重试一次（key 变更强制重建 <img>），再失败才降级为链接
-        var n = this.imgNonce[u] || 0;
-        if (n < 1) {
-          var self = this;
-          setTimeout(function () { self.imgNonce[u] = n + 1; }, 1200);
-        } else {
-          this.imgErr[u] = true;
-        }
+        /* 直接标记失败（缩略图是固定尺寸盒子，换“图挂了”不引起任何布局变化）。
+         * 旧版有 1.2s 自动重试：定时重挂 <img> 会反复触发整表重渲染，去掉。 */
+        this.imgErr[u] = true;
       },
       /* ---- 图片查看弹窗（页内放大，不开新标签） ---- */
       openViewer: function (urls, idx) {
@@ -263,7 +258,11 @@ function renderMtablesVue(container) {
         }
         var d = {}; d[c.key] = val;
         await this.saveCell(r, d);
-        if (!keepOpen) this.closeEdit();
+        /* 只在「还在编辑这一格」时收起：若 await 期间用户已双击打开别的格，
+         * 这里不能把新编辑器关掉（旧版的关闭竞态会造成闪烁/打架） */
+        if (!keepOpen && this.editing && this.editing.rid === r.id && this.editing.key === c.key) {
+          this.closeEdit();
+        }
       },
       saveCell: async function (r, d) {
         if (this.savingRow) return;
@@ -782,7 +781,7 @@ function renderMtablesVue(container) {
                     '<div v-else-if="c.type === \'image\' && imgList(c, r).length" class="mt-imgs">' +
                       '<span v-for="(u, i) in imgList(c, r)" :key="i" class="mt-img-btn" ' +
                             'title="点击放大查看（Esc 关闭）" @click="openViewer(imgList(c, r), i)">' +
-                        '<img v-if="!imgErr[u]" :key="u + (imgNonce[u] || 0)" :src="u" loading="lazy" ' +
+                        '<img v-if="!imgErr[u]" :key="u" :src="u" loading="lazy" ' +
                              'referrerpolicy="no-referrer" @error="imgFail(u)">' +
                         '<span v-else class="quad-note">图挂了</span>' +
                       '</span>' +
