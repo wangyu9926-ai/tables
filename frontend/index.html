@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>多维表格</title>
+<link rel="stylesheet" href="css/style.css?v=mt-open-2">
+<link rel="stylesheet" href="css/mtables.css?v=mt2">
+</head>
+<body>
+
+<!-- ============ 主应用（游客直接可看） ============ -->
+<div id="app">
+  <div id="app-body">
+    <div id="main">
+      <div id="page-container"></div>
+    </div>
+  </div>
+
+  <!-- 身份胶囊：浮在内容区右上角（原深色顶栏已去掉） -->
+  <div id="identity-bar">
+    <span id="guest-hint" class="quad-note" hidden>游客只读</span>
+    <button type="button" class="btn btn-primary btn-sm" id="login-entry-btn">登录</button>
+    <div id="user-box" hidden>
+      <button type="button" class="avatar" id="avatar" title="账号">用</button>
+      <div class="account-menu" id="account-menu" hidden>
+        <div class="account-user" id="account-user">用户</div>
+        <button type="button" class="btn-link sgm-logout" id="logout-btn">退出登录</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 登录弹层（点「登录」或写操作 401 时出现） ============ -->
+<div id="login-page" class="hidden">
+  <div class="login-box">
+    <h1>多维表格</h1>
+    <p class="login-sub">登录后可编辑 · 游客仅可查看</p>
+    <div class="login-form">
+      <div class="form-item">
+        <label>用户名</label>
+        <input id="login-username" type="text" placeholder="请输入用户名">
+      </div>
+      <div class="form-item">
+        <label>密码</label>
+        <input id="login-password" type="password" placeholder="请输入密码">
+      </div>
+      <button class="btn btn-primary btn-block" id="login-btn">登 录</button>
+      <button class="btn btn-block" id="login-cancel-btn" style="margin-top:10px">继续游客访问</button>
+    </div>
+    <div class="login-foot">账号由管理员在「用户管理」里开通 · 改动全留痕</div>
+  </div>
+</div>
+
+<!-- 全局 toast -->
+<div id="toast"></div>
+
+<script defer src="js/vendor/vue.global.prod.js"></script>
+<script defer src="js/vue-bridge.js"></script>
+<script defer src="js/boot.js"></script>
+<script defer src="js/api.js"></script>
+<script defer src="js/pages/mtables.js"></script>
+</body>
+</html>

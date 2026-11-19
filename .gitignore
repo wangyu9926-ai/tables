@@ -1,0 +1,24 @@
+# ---- 敏感配置（绝不入库）----
+backend/.env
+.env
+
+# ---- 参考用的其他仓库克隆（不属于本项目）----
+eias-data-platform/
+
+# ---- 运行时产物 ----
+backend/runtime/
+backend/app/mt_files/
+backend/app/__pycache__/
+backend/app/mtables/__pycache__/
+__pycache__/
+*.pyc
+
+# ---- 日志 ----
+.uvicorn.log
+.uvicicorn-test.log
+*.log
+
+# ---- 系统杂项 ----
+Thumbs.db
+.DS_Store
+.zcode/
