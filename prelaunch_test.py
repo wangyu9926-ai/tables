@@ -545,7 +545,9 @@ try:
                 json.dumps({'target': 'table', 'table_id': 'abc'}),
                 json.dumps({'target': 'new', 'project': PRJ, 'name': 'x' * 300}),
                 json.dumps({'target': 'new', 'project': PRJ, 'name': TAG + '导入坏列',
-                            'columns': [{'source': 0, 'label': 'x' * 300}]})):
+                            'columns': [{'source': 0, 'label': 'x' * 300}]}),
+                json.dumps({'target': 'new', 'project': PRJ, 'name': TAG + '导入坏选项',
+                            'columns': [{'source': 0, 'options': [float('inf')]}]})):
         r = admin.req('POST', '/api/import/commit',
                       files={'file': ('x.xlsx', _buf.getvalue(), 'application/octet-stream')}, data={'config': cfg})
         check(f'导入配置不合法 {cfg[10:30]} → 400', r.status_code == 400, f'{r.status_code} {r.text[:60]}')

@@ -2608,6 +2608,8 @@ def _imp_commit_sync(raw, filename, cfg):
             cols.append({'source': src, 'label': label, 'type': typ, 'options': opts})
         if not cols:
             raise HTTPException(400, '没有可导入的列')
+        # 选项先序列化好再建表：等插列时才发现 JSON 不合法，表已经建出来了，会留下没有列的空壳表
+        opts_json = [_jdump_col(c.get('options')) for c in cols]
         mx = q("SELECT COALESCE(MAX(sort),0) AS m FROM kb_table", one=True)['m']
         tid = ex("INSERT INTO kb_table(name,note,project,group_name,icon,sort) VALUES(%s,%s,%s,%s,%s,%s)",
                  (name, f'导入：{filename}'[:500], project, group, '📄', int(mx) + 1))
@@ -2621,7 +2623,7 @@ def _imp_commit_sync(raw, filename, cfg):
                 n += 1
             used_keys.add(key)
             ex("INSERT INTO kb_column(table_id,`key`,label,type,options,sort) VALUES(%s,%s,%s,%s,%s,%s)",
-               (tid, key, c['label'], c['type'], _jdump_col(c.get('options')), i))
+               (tid, key, c['label'], c['type'], opts_json[i], i))
             c['key'] = key
             by_key[key] = {'key': key, 'label': c['label'], 'type': c['type'],
                            'options': c.get('options')}
