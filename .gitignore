@@ -10,6 +10,9 @@ __pycache__/
 backend/local.secrets.json
 auth_gate/secret.key
 auth_gate/certs/
+# 首次启动生成的引导管理员明文密码（GATE_DATA_DIR 默认就在 auth_gate/）
+auth_gate/admin_bootstrap.txt
+auth_gate/data/
 
 # 运行产物 / 本机元数据
 *.log
