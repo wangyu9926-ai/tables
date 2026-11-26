@@ -128,22 +128,6 @@
 **100 人**：同时打开/刷新约 0.5~1.3 秒；100 人同时保存不同行约 1 秒完成；100 人同时登录约 4 秒（只在早上集中登录时遇到）。空闲用户不轮询、不占连接，100 人在线但分散操作时后端压力很小。
 **边界**：同一行多人同时改仍按乐观锁走 409；当前是单进程，100 人以上持续高频写（不是偶发高峰）建议再加进程/Redis 共享缓存或读写分离。
 
-## 线上托管（ZCode Sites）
-
-- 地址：**https://mumaren-bitable-mr9q.zai.site**
-- 运行：ZCode Sites，Linux x86-64 + Python 3.12；`.zcode-site/stage/start.sh` 绑定 `0.0.0.0:3000`，
-  依赖已交叉安装到 `stage/vendor`，直连现有数据库。
-- 访问控制：未登录访问 `/` **只返回登录页**，所有 `/api/*` 返回 401（唯一例外是
-  `POST /api/in/{表ID}`，需请求头 `X-KB-Token` 表级密钥，由接口自身校验），不再下发项目列表；
-  登录 5 次失败锁 120 秒，同 IP 20 次失败锁 10 分钟；Cookie `HttpOnly + Secure + SameSite=Lax`；
-  CSP、`X-Frame-Options: DENY`、HSTS、`noindex` 全开。
-- 数据库口令只在服务端部署包内，前端和静态资源不含口令；ZCode 右下角徽标已隐藏。
-- 权限 UI：非 admin 看不到新建项目/新建表/侧栏＋/Sheet 页签＋；字段管理按钮按「能力下发」显示；
-  viewer 还看不到「＋行」和「导入」，双击单元格会提示只读；后端接口仍是最终权限校验。
-- 云端会话密钥在 `$DATA_DIR`，重新部署或实例重启后需要重新登录（账号密码仍是 `kb_user` 里的那套）。
-- 更新线上：改完代码后重建 `.zcode-site/stage`，再执行
-  `node <zcode-site.mjs> deploy .zcode-site/stage`；`.zcode-site/` 不要上传或提交。
-
 ## 数据模型（引擎核心）
 
 | 表 | 作用 |
