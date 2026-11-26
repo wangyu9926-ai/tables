@@ -515,6 +515,9 @@ def norm_val(col, v):
     if v is None or v == '':
         return None
     if t == 'number':
+        if isinstance(v, float) and not math.isfinite(v):
+            # 请求体里的 NaN / Infinity：不能悄悄存成空值还不报错
+            raise ValueError(f"列「{col['label']}」的数值无效（NaN / Infinity）")
         s = str(v).strip().replace(',', '').replace('，', '')
         m = re.fullmatch(r'(-?\d+(?:\.\d+)?)\s*(亿|万|千|w|W|k|K)?%?', s)
         if m:

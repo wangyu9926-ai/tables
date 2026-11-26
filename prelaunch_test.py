@@ -498,9 +498,12 @@ for w in (99999999999999999999, -40000):
     r = admin.patch(f'/api/tables/{T1}/columns/{_col1["id"]}', {'label': _col1['label'], 'width': w})
     check(f'列宽越界 {str(w)[:12]} → 不 500', r.status_code == 200, f'{r.status_code}')
 _H = {'Content-Type': 'application/json'}
-for raw in ('{"data":Infinity}', 'NaN', 'Infinity', '{"data":{"金额":NaN}}', '[]', 'null', '"s"'):
+for raw in ('{"data":Infinity}', 'NaN', 'Infinity', '[]', 'null', '"s"'):
     r = admin.req('POST', f'/api/tables/{T1}/rows', data=raw, headers=_H)
     check(f'行接口请求体不合法 {_q(raw)[:20]} → 4xx', 400 <= r.status_code < 500, f'{r.status_code} {r.text[:60]}')
+for raw in ('{"data":{"金额":NaN}}', '{"data":{"金额":Infinity}}'):
+    r = admin.req('POST', f'/api/tables/{T1}/rows', data=raw, headers=_H)
+    check(f'数字单元格是 NaN / Infinity {_q(raw)[9:20]} → 400（不悄悄存成空行）', r.status_code == 400, f'{r.status_code} {r.text[:60]}')
 r = admin.req('POST', f'/api/tables/{T1}/columns', data='{"label":"c","type":"select","options":[Infinity]}', headers=_H)
 check('列选项含 Infinity → 4xx', 400 <= r.status_code < 500, f'{r.status_code}')
 r = admin.req('PATCH', f'/api/tables/{T1}/rows/1', data='{"data":', headers=_H)
