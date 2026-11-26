@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""通用多维表格引擎（架构对齐 D:\2611项目\多维表格 的 mt_* 设计，独立前缀 kb_）
+"""通用多维表格引擎（独立前缀 kb_，可与其它应用共用一个 MySQL 库而互不干扰）
 
 kb_table    表定义（可任意建/改/删；group_name 用于前端页签分组）
 kb_column   列定义（key/label/type/options/expr/width/sort/required/hidden）

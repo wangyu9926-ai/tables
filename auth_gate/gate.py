@@ -44,8 +44,13 @@ from backend.engine import ex, q, setting_get, setting_set, csp_for_html   # noq
 COOKIE = 'kb_gate'
 TOKEN_TTL = 12 * 3600
 _SECRET_PATH = Path(os.environ.get('GATE_SECRET_PATH') or (GATE_DATA_DIR / 'secret.key'))
-_COOKIE_SECURE = os.environ.get('GATE_COOKIE_SECURE') == '1'
 _GATE_HTTPS = os.environ.get('GATE_HTTPS') == '1'
+# 走 HTTPS（本机证书或上层代理）时 Cookie 一律带 Secure；代理模式下 GATE_HTTPS=1 也要带，
+# 否则登录 Cookie 会跟着明文请求发出去（代理到应用这一段是明文）。
+_COOKIE_SECURE = os.environ.get('GATE_COOKIE_SECURE') == '1' or _GATE_HTTPS
+# HSTS：平台代理 / 正式证书（域名）部署时用 GATE_HSTS=1 打开；自签证书的局域网部署不要开 ——
+# 浏览器记住只走 HTTPS 之后，证书不受信任时就不给“继续前往”，没装信任证书的同事会被挡在门外。
+_HSTS = os.environ.get('GATE_HSTS') == '1' or _GATE_HTTPS
 _ORIGIN_CHECK = os.environ.get('GATE_ORIGIN_CHECK') != '0'      # 老浏览器没有 Sec-Fetch-Site 时的兜底
 _MAX_BODY = int(os.environ.get('GATE_MAX_BODY_MB', '25')) * 1024 * 1024   # 导入上限 20MB + 表单开销
 _ctx_user = contextvars.ContextVar('gate_current_user', default=None)
@@ -112,7 +117,7 @@ def parse_token(token: str):
 # ---------------- 账号核验（实时查 kb_user） ----------------
 
 def verify_password(pw: str, stored: str) -> bool:
-    """与 D:\\2611项目\\多维表格 mtables/store.py 同款：scrypt$/pbkdf2$ 格式串，参数内嵌。"""
+    """口令格式：scrypt$N$r$p$salt$hash（参数内嵌在串里，换参数不用改代码）。"""
     try:
         parts = (stored or '').split('$')
         if parts[0] == 'scrypt' and len(parts) == 6:
@@ -1157,9 +1162,8 @@ async def _security_middleware(request, call_next):
     # 页面响应由各自的处理函数带上按内容算好的策略；这里是给接口等其它响应的严格兜底
     h.setdefault('Content-Security-Policy', csp_for_html())
     h.setdefault('X-Robots-Tag', 'noindex, nofollow, noarchive')
-    # HSTS 只在云托管（上层是受信任证书的 HTTPS）时发。本机自签证书的局域网部署故意不发：
-    # 浏览器一旦记住某主机只走 HTTPS，证书不受信任时就不再给“继续前往”，没装信任证书的同事会被直接挡在门外。
-    if _GATE_HTTPS:
+    # HSTS：正式证书（域名 / 平台代理）部署才发；自签证书的局域网部署故意不发（见文件头注释与 README）
+    if _HSTS:
         h.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
     p = request.url.path
     if p.startswith('/api/') or p.startswith('/__auth') or p in ('/login', '/healthz'):
@@ -1200,9 +1204,13 @@ def ensure_admin_exists():
         boot_file.write_text(
             '引导管理员：%s / %s；仅首次创建时生成，请登录后尽快改密码' % (u, pw),
             encoding='utf-8')
+        try:
+            os.chmod(boot_file, 0o600)          # 服务器上别的本地账号读不到（Windows 上忽略）
+        except OSError:
+            pass
     except OSError:
         pass
-    print(f'[gate] 已引导创建管理员：{u} / {pw}（也写在 {boot_file}）')
+    print(f'[gate] 已引导创建管理员：{u} / {pw}（也写在 {boot_file}）；登录后请改密码并删除该文件')
     _seed_default_grants()
 
 

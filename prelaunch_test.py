@@ -555,6 +555,15 @@ for body in ({'username': ['x'], 'password': '12345678'}, {'username': {'a': 1},
              {'username': '__pretest__pw', 'password': '12345678', 'real_name': ['r']}):
     r = admin.post('/__auth/users', body)
     check(f'建账号字段类型不对 {str(body)[:28]} → 400', r.status_code == 400, f'{r.status_code} {r.text[:60]}')
+# 超过 2^53 的整数：接口以字符串返回，浏览器显示才不丢精度（写库仍是精确整数）
+r = admin.post('/api/tables', {'name': TAG + '大数字', 'project': PRJ, 'columns': [{'label': '值', 'type': 'number'}]})
+_BT = j(r)['id']
+_BIG = 123456789012345678
+admin.post(f'/api/tables/{_BT}/rows', {'data': {'值': _BIG}})
+admin.post(f'/api/tables/{_BT}/rows', {'data': {'值': 12}})
+_vals = [x['data'].get('值') for x in j(admin.get(f'/api/tables/{_BT}/rows?size=0'))['rows']]
+check('超大整数以字符串返回且不丢精度', str(_BIG) in _vals, str(_vals)[:120])
+check('普通数字仍是数字类型', 12 in _vals, str(_vals)[:120])
 r = admin.get('/__auth/grants?uid=' + _q('²'))
 check('授权查询 uid=² → 400', r.status_code == 400, f'{r.status_code}')
 check('……畸形探测没有留下多余账号', not any(u['username'] == '__pretest__pw' for u in j(admin.get('/__auth/users'))['users']), '')
@@ -628,6 +637,23 @@ r = admin.post('/api/import/commit',
                                            'group_name': TAG + '导入组', 'sheet': '', 'header_row': 1})})
 check('导入新建表', r.status_code == 200 and j(r).get('ok'), r.text[:150])
 IMP_TID = j(r).get('table_id')
+# 长数字（订单号 / 商品 ID）按文本建列：做成数字列落库是准的，但浏览器 JS 只有 15~16 位精度，显示会少几位
+_wb2 = openpyxl.Workbook()
+_wb2.active.append(['订单号', '数量'])
+_wb2.active.append(['123456789012345678', 3])
+_wb2.active.append(['987654321098765432', 4])
+_buf2 = io.BytesIO()
+_wb2.save(_buf2)
+r = admin.post('/api/import/commit', files={'file': ('ids.xlsx', _buf2.getvalue(), 'application/octet-stream')},
+               data={'config': json.dumps({'target': 'new', 'project': PRJ, 'name': TAG + '导入长数字', 'header_row': 1})})
+check('导入长数字新建表', r.status_code == 200, r.text[:120])
+_LT = j(r).get('table_id')
+_lcols = {c['label']: c for c in next(t for t in j(admin.get('/api/meta'))['tables'] if t['id'] == _LT)['columns']}
+check('18 位订单号按文本建列', (_lcols.get('订单号') or {}).get('type') == 'text', str(_lcols.get('订单号'))[:140])
+_lrows = j(admin.get(f'/api/tables/{_LT}/rows?size=0'))['rows']
+check('订单号原样保留（不丢精度）', any(x['data'].get('订单号') == '123456789012345678' for x in _lrows),
+      str([x['data'].get('订单号') for x in _lrows])[:140])
+check('同表的普通数字仍是数字列', (_lcols.get('数量') or {}).get('type') == 'number', str(_lcols.get('数量'))[:140])
 d = j(admin.get(f'/api/tables/{IMP_TID}/rows?size=0'))
 check('导入行数=2', d.get('total') == 2, str(d.get('total')))
 qian = next((x for x in d['rows'] if x['data'].get('名称') == '钱七'), None)
@@ -966,6 +992,10 @@ wait_sync()
 tr = target_rows()
 check('多子表汇总到同一总表', len(tr) == 3 and any(x['data'].get('来源') == PRJ + '·同步子2' for x in tr),
       str(tr)[:240])
+_mtt = next(t for t in j(admin.get('/api/meta'))['tables'] if t['id'] == TT)
+check('总表元信息带子表名单（界面「汇总总表」徽标用）',
+      len(_mtt.get('sync_sources') or []) == 2 and PRJ + '·同步子1' in (_mtt.get('sync_sources') or []),
+      str(_mtt.get('sync_sources'))[:160])
 admin.delete(f'/api/sync/{SID1}')
 tr = target_rows()
 check('删除规则清掉该子表副本', len(tr) == 1 and tr[0]['data'].get('来源') == PRJ + '·同步子2', str(tr)[:200])
@@ -1004,6 +1034,11 @@ r = admin.get(f'/api/tables/{TT}/changes?since=0')
 _d = j(r)
 check('变更轮询接口返回 seq', r.status_code == 200 and isinstance(_d.get('seq'), int)
       and isinstance(_d.get('events'), list), r.text[:120])
+# 服务重启后：进程里的序号从 0 重新开始，客户端手里的反而更大——必须回一条 reset，否则这个页面永远收不到变更
+r = admin.get(f'/api/tables/{TT}/changes?since=99999999')
+_rd = j(r)
+check('客户端序号比服务端大时回 reset', r.status_code == 200
+      and any(e.get('kind') == 'reset' for e in (_rd.get('events') or [])), r.text[:120])
 import subprocess as _sp2  # noqa: E402
 _bearer = (admin.s.headers.get('Authorization') or '').replace('Bearer ', '')
 _p = _sp2.run(['curl', '-sN', '--max-time', '3', '-k', '-H', 'Authorization: Bearer ' + _bearer,

@@ -597,11 +597,16 @@ def _build_meta():
         rels_by_tid.setdefault(r['from_tid'], []).append(r)
         if r['to_tid'] != r['from_tid']:
             rels_by_tid.setdefault(r['to_tid'], []).append(r)
+    sync_src = {}
+    for r in q("SELECT s.target_tid, t.name FROM kb_sync s JOIN kb_table t ON t.id=s.source_tid ORDER BY s.id"):
+        sync_src.setdefault(r['target_tid'], []).append(r['name'])
     out = [{'id': t['id'], 'name': t['name'], 'note': t['note'], 'project': t['project'],
             'group_name': t['group_name'], 'icon': t['icon'], 'sort': t['sort'],
             'count': counts.get(t['id'], 0),
             'columns': cols_by_tid.get(t['id'], []),
-            'relations': rels_by_tid.get(t['id'], [])} for t in tables]
+            'relations': rels_by_tid.get(t['id'], []),
+            # 这张表是汇总总表时，列出它的子表：前端据此提示“改/删镜像行会同步回子表”
+            'sync_sources': sync_src.get(t['id'], [])} for t in tables]
     prjs = [{'name': r['name'], 'icon': r['icon'], 'sort': r['sort']}
             for r in q("SELECT name,icon,sort FROM kb_project WHERE deleted=0 ORDER BY sort,name")]
     known = {p['name'] for p in prjs}
@@ -1204,12 +1209,31 @@ class RowMoveReq(BaseModel):
     offset: int | None = None      # 或：相对当前位置移动 -1 / +1（右键“上移/下移”）
 
 
+def _json_safe_numbers(d):
+    """超过 2^53 的整数在 JavaScript 里会丢精度（订单号 / 商品 ID / 手机号一旦被当成数字就少几位）。
+    接口里把这类整数换成字符串返回，页面显示的就是原始数字；写库仍然是精确整数。
+    真正的办法是这类列用文本（导入时 16 位以上的纯数字会自动按文本建列）。"""
+    if not isinstance(d, dict):
+        return d
+    for k, v in list(d.items()):
+        if isinstance(v, bool) or v is None:
+            continue
+        if isinstance(v, int) and abs(v) > 9007199254740992:
+            d[k] = str(v)
+        elif isinstance(v, float) and not math.isfinite(v):
+            d[k] = None
+        elif isinstance(v, list):
+            d[k] = [str(x) if isinstance(x, int) and not isinstance(x, bool) and abs(x) > 9007199254740992
+                    else x for x in v]
+    return d
+
+
 def _rows_view(tid, recs, cols, project=''):
     formula_cols = [c for c in cols if c['type'] == 'formula']
     out = []
     for r in recs:
-        d = compute_formulas(jload(r['data']), cols, project) if formula_cols else jload(r['data'])
-        out.append({'id': r['id'], 'data': d, 'ver': r['ver'],
+        d = compute_formulas(jload(r['data']), cols, project) if formula_cols else dict(jload(r['data']))
+        out.append({'id': r['id'], 'data': _json_safe_numbers(d), 'ver': r['ver'],
                     'created_at': _ts(r['created_at']), 'updated_at': _ts(r['updated_at'])})
     return out
 
@@ -2300,6 +2324,14 @@ def _imp_infer(header, vals):
             return 'date', None
         if any(k in (header or '') for k in ('日期', '时间')):
             return 'date', None
+    # 长数字（订单号 / 商品 ID / 手机号 / 身份证 …）按文本建列：做成数字列，前端 JS 只有 15~16 位精度，
+    # 落库是对的，但显示和再编辑会少几位；带前导 0 的编号也一样。
+    if all(re.fullmatch(r'\d{16,}', str(v).strip()) for v in non):
+        return 'text', None
+    if any(k in (header or '') for k in ('ID', 'Id', 'id', '编号', '单号', '订单号', '手机', '电话',
+                                         '身份证', '卡号', '条码', '邮编', '账号')) \
+            and all(re.fullmatch(r'\d+', str(v).strip()) for v in non):
+        return 'text', None
     ns = [_imp_num(v) for v in non]
     if all(n is not None for n in ns):
         if any(k in (header or '') for k in ('日期', '时间')):

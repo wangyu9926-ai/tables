@@ -54,6 +54,108 @@
    或用表页「导入」上传 xlsx / xlsm / csv（支持列映射与类型），也可以走 `POST /api/in/{表ID}` 用写入密钥灌数据。
 5. 空库时侧栏「仪表盘」也是空的，用表页「分析」自己建；汇总同步、批注、视图等都要在有了自己的表之后才有内容。
 
+## 部署到服务器（域名 + 正式证书）
+
+局域网自签证书那套只适合内网。对外（有域名）按下面做，两种方式都要求**应用只监听 127.0.0.1**，
+把端口藏在反向代理后面，防火墙只开 80/443。
+
+### 方式 A：Nginx 终结 HTTPS（推荐）
+
+1. 服务器装 Python 3.11、clone 本仓库、`pip install -r requirements.txt`（虚拟环境随意）。
+2. 首次配置（无人值守，不弹问题）：
+   ```bash
+   GATE_SETUP_STDIN=1 python auth_gate/run_gate.py < answers.txt
+   ```
+   `answers.txt` 按提问顺序逐行写：数据库地址、端口、用户名、库名、口令、（库不存在时）`y`、再输一次口令、
+   管理员账号、密码、再输一次密码。也可以改用环境变量 `MUMA_DB_*` + `GATE_ADMIN_PASSWORD`，再普通启动一次。
+3. 用 systemd 常驻（`/etc/systemd/system/kb.service`，路径按实际改）：
+   ```ini
+   [Unit]
+   Description=牧马人线上多维表
+   After=network.target
+
+   [Service]
+   WorkingDirectory=/opt/tables
+   Environment=GATE_HOST=127.0.0.1
+   Environment=GATE_PORT=8614
+   Environment=GATE_HTTPS=1
+   Environment=GATE_HSTS=1
+   Environment=GATE_TZ=Asia/Shanghai
+   Environment=GATE_OPEN_BROWSER=0
+   Environment=PYTHONUNBUFFERED=1
+   ExecStart=/opt/tables/.venv/bin/python auth_gate/run_gate.py
+   Restart=always
+   RestartSec=3
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   `systemctl daemon-reload && systemctl enable --now kb`
+   - `GATE_HTTPS=1`：上层代理已经做了 HTTPS，应用这一段走明文；此时登录 Cookie 自动带 `Secure`、也自动发 HSTS。
+   - `GATE_HSTS=1`：正式证书才开。自签证书的局域网部署**不要开** —— 浏览器记住只走 HTTPS 之后，
+     证书不受信任时就不给「继续前往」，没装信任证书的同事会被挡在门外。
+   - `GATE_TZ`（默认 `Asia/Shanghai`，仅 Linux 生效）：服务器默认 UTC，日期公式 / 变动历史会差 8 小时；
+     云数据库的会话时区（`time_zone`）也要是同一时区。
+   - 一条命令看日志：`journalctl -u kb -f`。
+4. Nginx（`/etc/nginx/conf.d/kb.conf`），证书用 certbot 申请：
+   ```nginx
+   server {
+     listen 80;
+     server_name kb.example.com;
+     return 301 https://$host$request_uri;
+   }
+   server {
+     listen 443 ssl http2;
+     server_name kb.example.com;
+     ssl_certificate     /etc/letsencrypt/live/kb.example.com/fullchain.pem;
+     ssl_certificate_key /etc/letsencrypt/live/kb.example.com/privkey.pem;
+
+     client_max_body_size 30m;    # 导入上限 20MB + 表单开销（应用里另有 25MB 限制）
+
+     location / {
+       proxy_pass http://127.0.0.1:8614;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       proxy_http_version 1.1;
+     }
+
+     # 实时刷新走 SSE 长连接：不能缓冲、超时放长，否则页面收不到推送
+     location ~ ^/api/tables/[0-9]+/events$ {
+       proxy_pass http://127.0.0.1:8614;
+       proxy_set_header Host $host;
+       proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+       proxy_set_header X-Forwarded-Proto $scheme;
+       proxy_http_version 1.1;
+       proxy_buffering off;
+       proxy_cache off;
+       proxy_read_timeout 1h;
+       add_header X-Accel-Buffering no;
+     }
+   }
+   ```
+   `nginx -t && systemctl reload nginx`，浏览器打开 `https://kb.example.com`。
+   登录限流按真实客户端 IP 计：应用只在“直连对端是本机 / 内网”时采信 `X-Forwarded-For`，
+   所以 Nginx 要和应用在同一台机器（或同一内网），且必须传这个头，否则所有人会算成代理那一个 IP。
+5. 收尾：`chmod 600 backend/local.secrets.json`；`ss -lntp | grep 8614` 确认只监听 127.0.0.1；
+   防火墙只开 80/443；备份见下一节。
+
+### 方式 B：应用自己挂正式证书
+
+不想装 Nginx：把证书放成 `<证书目录>/server.crt`（fullchain）和 `<证书目录>/server.key`，然后
+
+```bash
+GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
+```
+
+证书的 SAN 里必须有访问用的域名。应用自己终结 TLS 时 Cookie 自动 Secure；此时 `GATE_HOST` 可保持默认 `0.0.0.0`，
+防火墙只放 8614（不要再开明文端口）。
+
+### 换域名 / 换证书
+
+- 方式 A：改 Nginx 的 `server_name` 和证书路径，reload 即可（应用配置不用动）。
+- 方式 B：换 `GATE_CERT_DIR` 指向新证书；自签的删掉 `auth_gate/certs/` 重启会按新地址重新生成，然后重新信任一次。
+
 ## 部署常见问题
 
 | 现象 | 原因 / 处理 |
@@ -85,7 +187,7 @@
 - **登录网关**：独立账号体系（`kb_user` / `kb_perm`），中间件在应用之外先拦一道：未登录访问 `/` 只返回登录页，
   `/api/*` 一律 401（唯一例外 `POST /api/in/{表ID}`，凭表级写入密钥自校验）。
 - **口令**：scrypt 单向加密；改密或被管理员重置后，已签发的旧登录凭证立即失效（`kb_user.token_ver`）。
-- **Cookie**：`HttpOnly + SameSite=Lax`，HTTPS 下再加 `Secure`，有效期 12 小时。
+- **Cookie**：`HttpOnly + SameSite=Lax`，HTTPS 下再加 `Secure`（应用自己走 HTTPS，或 `GATE_HTTPS=1` 由上层代理做 HTTPS），有效期 12 小时。
 - **登录限流**：同一 IP+账号 5 次失败锁 120 秒；同一 IP 20 次锁 10 分钟；**同一账号换 IP 连续猜 15 次锁 60 秒**
   （`GATE_USER_FAIL_LOCK` 可调），防止拿一个账号轮换 IP 慢慢猜。
 - **跨站写保护**：浏览器发出的写请求必须来自本站（优先看 `Sec-Fetch-Site`，老浏览器退回比较 `Origin` 与 `Host`）；
@@ -98,7 +200,7 @@
     该页面自动退回旧行为并在控制台打警告，不会把页面拦成白屏。
   - 其余响应头：`X-Frame-Options: DENY`、`X-Content-Type-Options: nosniff`、`frame-ancestors 'none'`、
     `base-uri 'self'`、`form-action 'self'`。
-  - **HSTS**（`Strict-Transport-Security`）只在平台托管（`GATE_HTTPS=1`，上层是受信任证书的 HTTPS）时发送；
+  - **HSTS**（`Strict-Transport-Security`）：`GATE_HTTPS=1`（上层代理做 HTTPS）或显式 `GATE_HSTS=1`（应用自己挂正式证书）时发送；
     本机自签证书的局域网部署故意不发 —— 浏览器一旦记住某个地址只走 HTTPS，证书不受信任时就不再提供「继续前往」，
     没装信任证书的同事会被直接挡在门外。
   - **接口对错误输入一律回明确的 4xx**（参数类型不对、内容超过列宽、数值越界、JSON 里有 `NaN` / `Infinity` 等），不会 500，
@@ -324,6 +426,8 @@
   改动的映射字段会**回写子表对应行**（子表行版本号 +1、记审计 `sync_back`），所以两边看到的是同一份数据。
   **总表直接新增的行没有链接，不会同步到子表**；在总表删除一个镜像行，子表对应行会一起软删（记 `sync_back_delete`）。
   冲突以**总表这次修改为准**（只回写你改的那几个字段，没动的不碰）；回写用内部标记防止「总表→子表→总表」来回打转。
+  界面有对应提示：汇总总表在表名旁显示橙色「汇总总表」徽标（悬停看子表名单与规则），
+  删行确认里会写明“从子表汇总来的那行会连子表一起删”，在总表改镜像行触发回写时会提示“已同步回子表 N 行”。
 - 仅支持同项目内汇总；不支持定时同步、跨项目汇总。
 - 实测：100 行首次全量约 4 秒；无变化的重复全量约 0.4 秒。
 - 典型用法：把同结构的多张子表汇到一张总表，另加一列「来源表」（映射 `$source_table`）区分来源；
@@ -361,6 +465,8 @@
   - **覆盖当前表**：先软删当前表所有行再写入，失败自动回滚；导入前有确认。
   - **新建一张表**：用 Excel 表头建列，自动推断文本/数字/日期/单选/勾选，可在弹窗里改类型、取消列。
 - 值处理：Excel 日期/时间转 `YYYY-MM-DD`；数字支持千分位与 `2万`/`1.2w`/`1.5亿`；多选按 `, ， ; ； 、 换行` 拆分；单选自动补充新选项；公式列和图片列不导入。
+  **16 位以上的纯数字（订单号 / 商品 ID / 手机号 / 身份证）一律按文本建列**，表头里带 ID / 编号 / 单号 / 手机 / 电话 / 身份证 / 卡号 / 条码 / 邮编 / 账号 的纯数字列也按文本——
+  做成数字列落库是准的，但浏览器里 JS 只有 15~16 位精度，显示和再编辑会少几位。
   单元格长度受上限约束（文本 20000 字、选项 500 字、多选 200 个），超出的值会被拒绝而不是悄悄截断。
 - 权限：预览也要求对目标表（或目标项目）有权限——解析 Excel 是重活，不能只凭「已登录」就调用；
   追加/覆盖要求当前表可编辑；新建表要求项目可编辑。只读用户看不到「导入」按钮，接口也会 403。
@@ -396,6 +502,22 @@
   它们依赖的解码快照与整库备份不在仓库里（`.gitignore` 排除），要复现得自己准备源数据。
 - `cleanup_legacy.py` 这类脚本会改库（软删旧表/旧项目），跑之前先备份。
 
+## 备份与恢复
+
+- **备份**：`python tools/backup_db.py` —— `mysqldump --single-transaction` 导到 `backups/`（默认保留最近 7 份，
+  `--keep 14` 可改），导完检查文件末尾有没有 `Dump completed`；数据库口令通过环境变量 `MYSQL_PWD` 传给 mysqldump，
+  不出现在命令行、也不会打印。建议服务器上每天跑一次（Linux cron / Windows 任务计划），并把 `backups/` 放到另一块盘或对象存储。
+  `backups/` 已在 `.gitignore` 里，不会被提交。
+- **检查一份备份是否完整**：`python tools/backup_db.py --check backups/xxx.sql.gz`
+- **恢复**（先停服务；动手前把当前库再备一份）：
+  ```bash
+  mysql -h 主机 -P 端口 -u 账号 -p -e "CREATE DATABASE 库名 CHARACTER SET utf8mb4"
+  gunzip -c backups/xxx.sql.gz | mysql -h 主机 -P 端口 -u 账号 -p --default-character-set=utf8mb4 库名
+  ```
+  启动服务后抽查：项目、表、行数、变动历史、汇总规则（表页「汇总同步」里规则还在、点「立即同步」不新增重复行）。
+- **演练**：上线前做过一次真恢复（把生产备份恢复到临时库，逐项核对：17 张表、323 列、5950 行、4 个账号、
+  3 条汇总规则、538 条镜像链接、510 条审计，表格1 655 行——与生产一致）。建议每季度自己演练一次，别等真出事。
+
 ## 上线前回归
 
 - `python prelaunch_test.py`（需服务已启动；默认打 `https://127.0.0.1:8614`，自签证书自动忽略校验，换地址用环境变量 `KB_TEST_BASE`）。
@@ -416,7 +538,9 @@
 ## 已知边界
 
 - **证书是自签的**：第一次访问浏览器会提示不安全，选「继续访问」；本机 IP 变了要删 `auth_gate/certs/` 重启重新生成。
-  要彻底消掉提示，可以把 `server.crt` 装进「受信任的根证书」，或用内网域名 + 正式证书（改 `GATE_CERT_DIR` 指向即可）。
+  要彻底消掉提示，可以把 `server.crt` 装进「受信任的根证书」，或用域名 + 正式证书（见「部署到服务器」）。
+  **自签证书只适合内网**：让同事一直点「继续前往」等于训练大家忽略证书告警（同网段可做中间人）；
+  对外一律用域名 + 正式证书，或者在代理上做 HTTPS。
 - **数据库口令**不写在代码里（环境变量 / `backend/local.secrets.json`）。建议定期轮换，并给应用单独建一个
   最小权限的数据库账号（在数据库侧操作）；`backend/local.secrets.json` 不要提交或外发。
 - 云端托管时客户端 IP 依赖平台代理传的 `X-Forwarded-For`（网关只在直连/内网对端时采信），具体平台是否原样透传未验证。
@@ -446,4 +570,7 @@
 - 导入不支持公式列、图片列；合并单元格只读左上角值，多级表头请先整理成单行表头。
 - 图片单元格支持 png / jpg / gif / webp / bmp，单张 ≤8MB，存 MySQL `kb_image`；
   读取接口按表权限校验，游客和只读限制同样生效；清空单元格不会立即删库里的原图。
-- 行数据存 JSON，单表几十万行内没压力；分析页当前在前端全量聚合，数据量再大时再下推服务端。
+- 行数据存 JSON，单表几十万行内没压力；分析页当前在前端全量聚合（整表要传到浏览器），
+  **单表超过 5 万行就别再用分析页做图表**，等后续把聚合下推到服务端。
+- 数字列存的是精确整数，但超过 2^53（约 9×10^15）的整数在浏览器里会丢精度：接口把这类值以**字符串**返回，
+  页面显示是原始数字；排序 / 公式计算仍按数值算。订单号、商品 ID、手机号这类请用文本列（导入会自动按文本处理）。

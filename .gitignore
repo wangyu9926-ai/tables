@@ -24,3 +24,6 @@ gui-test-screenshots/
 migration/*.json
 migration/*.sql.gz
 migration/legacy_code/
+
+# 数据库备份（tools/backup_db.py 生成，不要进仓库）
+backups/

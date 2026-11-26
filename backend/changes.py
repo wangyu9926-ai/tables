@@ -63,6 +63,10 @@ def since(tid, seq):
         seq = int(seq or 0)
     except Exception:
         seq = 0
+    if seq > cur:
+        # 服务刚重启过：进程内的序号从 0 重新开始，客户端手里的序号反而更大。
+        # 必须明确回一条 reset，否则客户端一直以为自己比服务端还新，之后永远收不到变更、也不报错。
+        return cur, [{'seq': cur, 'kind': 'reset', 'rows': [], 'at': round(time.time(), 3), 'actor': ''}]
     if seq >= cur:
         return cur, []
     if ev and seq < ev[0]['seq'] - 1:

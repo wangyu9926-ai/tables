@@ -162,6 +162,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .sheet-tab { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 12px; font-size:var(--fs-md);
   color:var(--text-2); cursor:pointer; white-space:nowrap; border-radius:7px; transition:background .12s,color .12s; }
 .sheet-tab:hover { background:var(--gray-100); color:var(--text); }
+.sync-chip { margin-left:6px; padding:1px 7px; border-radius:999px; font-size:11px; line-height:16px;
+  color:#8a5a00; background:#fff4d6; border:1px solid #f0dba6; vertical-align:2px; }
+.fm-hint { margin:0 0 10px; padding:8px 10px; font-size:12px; line-height:1.6; color:var(--text-3);
+  background:var(--gray-50); border-radius:6px; }
+.del-row-sync { color:#8a5a00; }
 .sheet-tab.on { background:var(--primary-light); color:var(--primary); font-weight:400; }
 .sheet-tab.editing { padding:0 6px; }
 .tab-ipt { width:100%; height:24px; padding:0 6px; border:1px solid var(--primary); border-radius:5px;
@@ -1373,7 +1378,7 @@ function esc(s) { return String(s).replace(/[&<>"']/g, function (c) {
 function toast(msg) { var t=$('toast'); t.textContent=msg; t.classList.add('show');
   clearTimeout(t._h); t._h=setTimeout(function(){t.classList.remove('show');},1900); }
 
-var BUSY_TIMER = null, BUSY_START = 0, DELETING_PROJECTS = {};
+var BUSY_TIMER = null, BUSY_START = 0, DELETING_PROJECTS = Object.create(null);
 function showBusy(title) {
   var r = $('busy-root'); if (!r) return;
   r.innerHTML = '<div class="busy-mask"><div class="busy-box" role="status" aria-live="polite">'
@@ -1609,7 +1614,7 @@ function restoreView() {
     state.filters = v.filters || {};
     // 恢复时丢掉已不存在的列的筛选，避免把整表筛没
     if (t0 && typeof state.filters === 'object') {
-      var ks = {};
+      var ks = Object.create(null);
       (t0.columns || []).forEach(function (c) { ks[c.key] = 1; });
       Object.keys(state.filters).forEach(function (k) { if (!ks[k]) delete state.filters[k]; });
     }
@@ -1658,7 +1663,9 @@ async function boot() {
   setTimeout(prefetchRows, 600);
 }
 function rebuildGroups() {
-  var map = {};
+  /* 名字当键的字典一律不带原型：项目名 / 分组名 / 表名是用户随便起的，叫 __proto__、constructor、toString
+     这类名字时，普通对象取到的是对象自带的成员，整个首页会渲染失败（谁都进不来） */
+  var map = Object.create(null);
   META.tables.forEach(function (t) {
     var g = t.group_name || t.name;
     if (!map[g]) map[g] = {name:g, icon:t.icon||'📄', sort:t.sort, sheets:[]};
@@ -1673,7 +1680,7 @@ function rebuildGroups() {
   applyUserOrder(GROUPS);
 }
 function rebuildProjects() {
-  var map = {};
+  var map = Object.create(null);
   (META.projects || []).forEach(function (p) {
     map[p.name] = {name:p.name, icon:p.icon || '📁', groups:[], sort:p.sort || 0,
                    analysis_role:p.analysis_role || null};
@@ -1685,7 +1692,7 @@ function rebuildProjects() {
   });
   // 每个项目内再按 group_name 聚合
   PROJECTS = Object.keys(map).map(function (k) {
-    var prj = map[k], gmap = {};
+    var prj = map[k], gmap = Object.create(null);
     prj.groups.forEach(function (t) {
       var g = t.group_name || t.name;
       if (!gmap[g]) gmap[g] = {name:g, icon:t.icon||'📄', sheets:[]};
@@ -1876,7 +1883,7 @@ function openSheet(tid, keepState) {
   closeRowPanel();
   closeMobileSidebar();
   state.tid = tid;
-  if (!keepState) { state.kw=''; state.page=1; state.sort=''; state.filters={}; $('kw').value = ''; }
+  if (!keepState) { state.kw=''; state.page=1; state.sort=''; state.filters=Object.create(null); $('kw').value = ''; }
   var t = META.tables.find(function (x) { return x.id === tid; });
   // 定位所属项目（侧栏按项目过滤）
   curProject = PROJECTS.find(function (p) {
@@ -1889,8 +1896,7 @@ function openSheet(tid, keepState) {
   $('proj-view').style.display = 'none';
   $('table-view').classList.add('on');
   liveConnect();                     // 实时刷新：换表就换一条推送连接
-  $('tv-name').textContent = t ? curGroupName(t) + ' · ' + (t.name.split('·')[1] || t.name) : '';
-  $('tv-name').title = $('tv-name').textContent;
+  setTvName(t, t ? curGroupName(t) + ' · ' + (t.name.split('·')[1] || t.name) : '');
   $('btn-import').style.display = (t && t.my_role === 'editor') ? '' : 'none';
   $('btn-analysis').style.display = (curProject && curProject.analysis_role) ? '' : 'none';
   $('btn-sync').style.display = (t && ME && ME.role === 'admin') ? '' : 'none';
@@ -1998,7 +2004,7 @@ function startRenameGroup(el, oldName) {
         if (curProject) curProject = PROJECTS.find(function (p) { return p.name === curProject.name; }) || curProject;
         renderSidebar(); renderSheetBar();
         var t = META.tables.find(function (x) { return x.id === state.tid; });
-        if (t && $('tv-name')) $('tv-name').textContent = curGroupName(t) + ' · ' + (t.name.split('·')[1] || t.name);
+        if (t && $('tv-name')) setTvName(t, curGroupName(t) + ' · ' + (t.name.split('·')[1] || t.name));
         toast('已重命名为 ' + val);
         return;
       } catch (e) {
@@ -2050,6 +2056,23 @@ function applyRoleUI() {
   if (sd) sd.style.display = admin ? '' : 'none';
 }
 
+/* 表名 + 「汇总总表」徽标：这张表是汇总目标时，从子表汇总来的行改/删会写回子表，界面要说清楚 */
+function setTvName(t, txt) {
+  var el = $('tv-name');
+  if (!el) return;
+  var src = (t && t.sync_sources && t.sync_sources.length) ? t.sync_sources : null;
+  el.textContent = txt;
+  if (src) {
+    el.appendChild(document.createTextNode(' '));
+    var chip = document.createElement('span');
+    chip.className = 'sync-chip';
+    chip.textContent = '汇总总表';
+    chip.title = '本表汇总了「' + src.join('」「') + '」。从子表汇总来的行：在这里改会写回子表，'
+      + '删会连子表那一行一起删；在这张表里自己新增的行不会同步到子表。';
+    el.appendChild(chip);
+  }
+  el.title = txt + (src ? '（汇总总表：改/删汇总行会同步回子表）' : '');
+}
 function renderSheetBar() {
   var g = curGroup();
   var html = g.sheets.map(function (s) {
@@ -2067,10 +2090,10 @@ function renderSheetBar() {
     el.onclick = function () {
       if (el.querySelector('input')) return;       // 编辑中不切表
       var id=+el.getAttribute('data-id'); if(id===state.tid) return;
-      state.tid=id; state.kw=''; state.page=1; state.sort=''; state.filters={};
+      state.tid=id; state.kw=''; state.page=1; state.sort=''; state.filters=Object.create(null);
       closeFilterPop(); $('kw').value='';
       var tt=META.tables.find(function(x){return x.id===id;});
-      $('tv-name').textContent = tt ? curGroupName(tt)+' · '+(tt.name.split('·')[1]||tt.name) : '';
+      setTvName(tt, tt ? curGroupName(tt)+' · '+(tt.name.split('·')[1]||tt.name) : '');
       renderSheetBar(); renderHead(); loadRows();
     };
     el.ondblclick = function () { startRenameTab(el); };
@@ -2090,7 +2113,7 @@ async function addSheetToGroup() {
   var btn = $('sheet-add'); if (btn) btn.classList.add('busy');
   try {
     // 组内已有 SheetN 取最大编号 +1；全库重名再顺延
-    var used = {};
+    var used = Object.create(null);
     META.tables.forEach(function (x) { used[x.name] = 1; });
     var maxN = 0;
     META.tables.forEach(function (x) {
@@ -2207,7 +2230,7 @@ function startRenameTab(el) {
         if (rec) rec.name = res.name || rec.name;
         writeMetaCache(META);
         rebuildGroups(); rebuildProjects();
-        if ($('tv-name') && state.tid === id) $('tv-name').textContent = curGroupName(rec) + ' · ' + val;
+        if ($('tv-name') && state.tid === id) setTvName(rec, curGroupName(rec) + ' · ' + val);
         renderSidebar(); renderSheetBar();
         toast('已重命名为 ' + val);
         return;
@@ -2256,7 +2279,7 @@ function openApiKeys() {
     else if (c0.type === 'select' && o0) sampleVal = o0;
     else if (c0.type === 'multiselect') sampleVal = o0 ? [o0] : [];
   }
-  var sampleData = {};
+  var sampleData = Object.create(null);
   sampleData[sampleKey] = sampleVal;
   var bodyText = '{"data":' + JSON.stringify(sampleData) + '}';
 
@@ -2524,7 +2547,7 @@ function openSyncMgr() {
       enhanceSelects(mapEl);
     }
     function collect() {
-      var out = {};
+      var out = Object.create(null);
       $('sync-map').querySelectorAll('select[data-tk]').forEach(function (s) {
         if (s.value) out[s.getAttribute('data-tk')] = s.value;
       });
@@ -2654,7 +2677,8 @@ function openFieldMgr() {
       + '<button class="fm-del" data-del="'+c.id+'" title="删除列">✕</button></div>';
   }).join('');
   modal('字段管理 · '+(t.name.split('·')[1]||t.name),
-    '<div id="fm-list">'+rows+'</div>'
+    '<div class="fm-hint">隐藏列只影响显示，不是权限：有这张表访问权限的人仍能拿到隐藏列的值，敏感数据请用「用户管理 → 授权」隔离。</div>'
+    + '<div id="fm-list">'+rows+'</div>'
     + '<div style="margin-top:10px"><button class="btn btn-primary" id="fm-add">＋ 新增字段</button></div>',
     '<span style="flex:1;font-size:var(--fs-xs);color:var(--text-3)" id="fm-sum"></span>'
     + '<button class="btn" id="fm-cancel">关闭</button><button class="btn btn-primary" id="fm-ok">保存</button>',
@@ -2876,7 +2900,7 @@ function openColumnEdit(cid) {
       };
       $('ce-cancel').onclick=function(){ openFieldMgr(); };
       $('ce-ok').onclick=async function(){
-        var labels=[], colors={};
+        var labels=[], colors=Object.create(null);
         optBox.querySelectorAll('.opt-row').forEach(function(row){
           var name=row.querySelector('.opt-name').value.trim(); if(!name) return;
           if(labels.indexOf(name)!==-1) return;
@@ -2918,7 +2942,7 @@ async function refreshMeta(selectTid) {
   }
   if ($('table-view').classList.contains('on') && state.tid) {
     var t = META.tables.find(function (x) { return x.id === state.tid; });
-    if ($('tv-name')) $('tv-name').textContent = t ? curGroupName(t) + ' · ' + (t.name.split('·')[1] || t.name) : '';
+    if ($('tv-name')) setTvName(t, t ? curGroupName(t) + ' · ' + (t.name.split('·')[1] || t.name) : '');
     // 项目/组可能变了，重建当前项目引用
     curProject = PROJECTS.find(function (p) {
       return p.groups.some(function (g) { return g.sheets.some(function (s) { return s.id === state.tid; }); });
@@ -2966,7 +2990,7 @@ function updateViewChrome(){
 }
 function resetView(){
   if(openFilter) closeFilterPop();
-  state.kw=''; state.sort=''; state.dir=1; state.filters={}; state.page=1;
+  state.kw=''; state.sort=''; state.dir=1; state.filters=Object.create(null); state.page=1;
   var kw=$('kw'); if(kw) kw.value='';
   renderHead(); loadRows(); updateViewChrome();
   toast('已恢复默认视图：搜索、筛选、排序都清掉了');
@@ -2981,7 +3005,7 @@ function tableViews(){ var a=readAllViews()[String(state.tid)]; return Array.isA
 function saveTableViews(list){ var all=readAllViews(); all[String(state.tid)]=list; writeAllViews(all); }
 function currentViewCore(){ return {kw:state.kw||'', sort:state.sort||'', dir:state.dir||1, filters:state.filters||{}}; }
 function viewCoreKey(core){
-  var f=core.filters||{}, ks=Object.keys(f).sort(), o={};
+  var f=core.filters||{}, ks=Object.keys(f).sort(), o=Object.create(null);
   ks.forEach(function(k){ o[k]=f[k]; });
   return JSON.stringify({kw:core.kw||'', sort:core.sort||'', dir:core.dir||1, filters:o});
 }
@@ -2998,8 +3022,8 @@ function updateViewBtn(){
 }
 /* 视图里引用的列可能已经被删掉：应用时把这些条件丢掉，免得整张表被筛成空 */
 function sanitizeViewCore(core){
-  var keys={}; (curTable().columns||[]).forEach(function(c){ keys[c.key]=1; });
-  var f={};
+  var keys=Object.create(null); (curTable().columns||[]).forEach(function(c){ keys[c.key]=1; });
+  var f=Object.create(null);
   if (isAdvFilter(core.filters)) {
     var conds = core.filters.conds.filter(function(c){ return c && keys[c.key]; });
     if (conds.length) f = { logic: core.filters.logic === 'or' ? 'or' : 'and', conds: conds };
@@ -3115,7 +3139,7 @@ function renderHead(){
     e.stopPropagation(); var k=f.getAttribute('data-c');
     if(openFilter===k) closeFilterPop(); else { closeFilterPop(); openFilterPop(k,f); }
   };});
-    var cf=$('clear-filters'); if(cf) cf.onclick=function(e){ e.stopPropagation(); state.filters={};state.page=1;closeFilterPop();renderHead();loadRows();updateViewChrome(); };
+    var cf=$('clear-filters'); if(cf) cf.onclick=function(e){ e.stopPropagation(); state.filters=Object.create(null);state.page=1;closeFilterPop();renderHead();loadRows();updateViewChrome(); };
   bindColResize();
 }
 function bindColResize(){
@@ -3556,8 +3580,16 @@ function liveSchedule() {
 }
 function liveOnChange(msg) {
   try {
-    if (msg && msg.seq) LIVE.lastSeq = msg.seq;
     var evs = (msg && msg.events) || [], me = (ME && ME.username) || '';
+    var reset = false;
+    if (msg && typeof msg.seq === 'number' && msg.seq !== LIVE.lastSeq) {
+      // 服务重启过：进程里的序号从 0 重新开始，比手里的还小 → 整页重取一次（否则这个页面以后永远收不到新变更）
+      reset = msg.seq < LIVE.lastSeq;
+      LIVE.lastSeq = msg.seq;
+    }
+    if (evs.some(function (e) { return e.kind === 'reset'; })) reset = true;
+    if (reset) { LIVE.updateIds = null; liveSchedule(); return; }
+    if (!evs.length) return;              // 序号对齐了、但没有变化：什么都不用刷
     // 自己刚保存触发的提示不用再刷一次（数据就是自己刚写的）
     if (evs.length && me && evs.every(function (e) { return e.actor === me; })) return;
     // 批注变了：角标计数要重取（这个只能整表重画可见行，批注本来就少）
@@ -3587,7 +3619,7 @@ function liveStartPolling() {
   LIVE.poll = setInterval(function () {
     if (!state.tid || LIVE.tid !== state.tid || document.hidden || liveBusy()) return;
     api('/api/tables/' + state.tid + '/changes?since=' + LIVE.lastSeq).then(function (d) {
-      if (d && d.seq !== LIVE.lastSeq) liveOnChange(d);
+      if (d) liveOnChange(d);
     }).catch(function () {});
   }, 5000);
 }
@@ -3601,7 +3633,10 @@ function liveConnect() {
     LIVE.es = es;
     es.addEventListener('hello', function (e) {
       LIVE.failed = 0;
-      try { LIVE.lastSeq = (JSON.parse(e.data) || {}).seq || 0; } catch (err) {}
+      var s = 0;
+      try { s = (JSON.parse(e.data) || {}).seq || 0; } catch (err) {}
+      if (s < LIVE.lastSeq) { LIVE.updateIds = null; liveSchedule(); }   // 服务重启过：序号倒退，整页重取
+      LIVE.lastSeq = s;
     });
     es.addEventListener('change', function (e) {
       try { liveOnChange(JSON.parse(e.data)); } catch (err) {}
@@ -4090,6 +4125,7 @@ async function saveRowValue(rid,key,val){
   var res;
   try { res=await api('/api/tables/'+state.tid+'/rows/'+rid,'PATCH',{data:{[key]:val},ver:ver}); }
   catch(e){ if(td && oldHtml!==null) td.innerHTML=oldHtml; throw e; }
+  if (res && res.synced_back) toast('已同步回子表 ' + res.synced_back + ' 行');
   var row=res.row||{}; var nver=res.ver||ver+1;
   ROWDATA[rid]=row;
   if(g){ g.data=row; g.ver=nver; }
@@ -4518,9 +4554,12 @@ function confirmDeleteRow(rid) {
   if (!canEditRows()) { toast('只读权限，不能删除'); return; }
   var nm = rpName(ROWDATA[rid] || {}, curCols()) || '';
   if (!nm || nm === '0') nm = 'ID ' + rid;   // 空行/纯数字 0 时显示行 ID
+  var syncSub = (t.sync_sources && t.sync_sources.length)
+    ? '<div class="del-row-sub del-row-sync">本表是汇总总表：如果这行是从子表汇总来的，子表里对应的那一行也会一起删除。</div>'
+    : '';
   appConfirm('删除行',
     '确定删除「<b>' + esc(nm) + '</b>」？'
-    + '<div class="del-row-sub">行 ID ' + rid + '，删除后从当前表移除。</div>',
+    + '<div class="del-row-sub">行 ID ' + rid + '，删除后从当前表移除。</div>' + syncSub,
     '删除', true).then(function (ok) {
     if (!ok) return;
     api('/api/tables/' + t.id + '/rows/' + rid, 'DELETE').then(function () {
@@ -4915,12 +4954,12 @@ function openAdvancedFilter(seedKey){
       };
       root.querySelector('#adv-cancel').onclick=function(){ closeModal(); };
       root.querySelector('#adv-clear').onclick=function(){
-        state.filters={}; state.page=1; closeModal();
+        state.filters=Object.create(null); state.page=1; closeModal();
         renderHead(); loadRows(); updateViewChrome(); toast('已清除筛选');
       };
       root.querySelector('#adv-ok').onclick=function(){
         var list=collect();
-        if(!list.length) state.filters={};
+        if(!list.length) state.filters=Object.create(null);
         else state.filters={ logic:ADV.logic==='or'?'or':'and', conds:list };
         state.page=1; closeModal(); renderHead(); loadRows(); updateViewChrome();
         toast(list.length ? ('高级筛选：'+list.length+' 个条件，'+(ADV.logic==='or'?'任一满足':'全部满足')+'（只影响你自己的视图）')
@@ -5073,7 +5112,7 @@ $('btn-add-row').onclick = async function () {
     var hadView = !!(state.kw || state.sort || Object.keys(state.filters).length);
     if (hadView) {
       state.kw = ''; $('kw').value = '';
-      state.sort = ''; state.dir = 1; state.filters = {};
+      state.sort = ''; state.dir = 1; state.filters = Object.create(null);
       closeFilterPop();
     }
     var t = curTable();
@@ -5101,7 +5140,7 @@ $('btn-sync').onclick = openSyncMgr;
 $('btn-hist').onclick=async function(){
   var t=curTable();
   var d=await api('/api/tables/'+state.tid+'/audit?limit=200');
-  var labelOf={};
+  var labelOf=Object.create(null);
   (t.columns||[]).forEach(function(c){ labelOf[c.key]=c.label; });
   function colName(k){ return labelOf[k]||k; }
   function fmtVal(v){
@@ -6216,7 +6255,7 @@ function anaMatch(v, f, col) {
 function anaMetric(rows, m, byKey) {
   if (m.agg === 'count') return rows.length;
   if (m.agg === 'distinct') {
-    var set = {};
+    var set = Object.create(null);   // 单元格的值当键
     rows.forEach(function (r) {
       var v = r.data[m.field], arr = Array.isArray(v) ? v : [v];
       arr.forEach(function (x) {
@@ -6260,7 +6299,7 @@ function anaOpsFor(col) {
 }
 function anaAgg(rows, cfg) {
   var cols = anaCols(cfg.table_id);
-  var byKey = {};
+  var byKey = Object.create(null);   // 列名当键，同上
   cols.forEach(function (c) { byKey[c.key] = c; });
   var metrics = ((cfg.metrics && cfg.metrics.length) ? cfg.metrics : [{ agg: 'count', field: '' }])
     .map(function (m) {
@@ -6271,7 +6310,7 @@ function anaAgg(rows, cfg) {
     return fs.every(function (f) { return anaMatch(r.data[f.field], f, byKey[f.field]); });
   });
   var dimCol = cfg.dimension ? byKey[cfg.dimension] : null;
-  var map = {}, order = [];
+  var map = Object.create(null), order = [];   // 分组的值来自单元格内容，什么都可能是键
   data.forEach(function (r) {
     var keys;
     if (!dimCol) {
@@ -6282,7 +6321,7 @@ function anaAgg(rows, cfg) {
       else if (Array.isArray(v)) keys = v.length ? v.map(function (x) { return String(x); }) : ['（空）'];
       else keys = [anaDimLabel(v)];
     }
-    var seen = {};
+    var seen = Object.create(null);
     keys.forEach(function (k) {
       if (seen[k]) return;
       seen[k] = 1;
@@ -7068,7 +7107,7 @@ function impInitMapping() {
   var cols = anaCols(state.tid).filter(function (c) {
     return c.type !== 'formula' && c.type !== 'image';
   });
-  var byLabel = {};
+  var byLabel = Object.create(null);   // Excel 表头是什么都可能
   cols.forEach(function (c) { byLabel[c.label] = c.key; });
   IMP.mapping = IMP.preview.headers.map(function (h) {
     return byLabel[h.name] || (IMP.autoNew ? '__new__' : '');

@@ -13,6 +13,7 @@ import os
 import socket
 import sys
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -102,10 +103,13 @@ def ensure_cert():
 
 def _exclusive_socket(host: str, port: int):
     """自建监听 socket：Windows 下 SO_EXCLUSIVEADDRUSE 独占端口，
-    防止别的进程（自动重启脚本等）再用 127.0.0.1 细粒度绑定抢走流量绕过门卫。"""
+    防止别的进程（自动重启脚本等）再用 127.0.0.1 细粒度绑定抢走流量绕过门卫。
+    Linux / macOS 下用 SO_REUSEADDR：重启后 TIME_WAIT 的连接不会让端口绑不上（服务器上重启很常见）。"""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     if hasattr(socket, 'SO_EXCLUSIVEADDRUSE'):
         s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+    elif hasattr(socket, 'SO_REUSEADDR'):
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((host, port))
     s.listen(2048)
     s.set_inheritable(False)
@@ -260,6 +264,8 @@ def _setup_db():
         print('成功')
         if not pw:
             print('    注意：数据库口令为空，只适合本机开发库；对外部署请给账号设置口令。')
+        if user.strip().lower() == 'root':
+            print('    建议：给本应用单独建一个只对目标库有权限的账号，不要用 root（见 README「安全」）。')
         p = _write_secrets({'MUMA_DB_HOST': host, 'MUMA_DB_PORT': str(port_i), 'MUMA_DB_USER': user,
                             'MUMA_DB_PASSWORD': pw, 'MUMA_DB_NAME': name})
         print(f'    已保存到 {p}（已在 .gitignore 里，不要外发）')
@@ -307,7 +313,40 @@ def _setup_admin():
     print(f'    管理员 {u} 已创建，登录后请尽快改密码。')
 
 
+def _run_server(server, sock):
+    """在 uvicorn 用的事件循环上装一个异常处理器：只吞掉一种“客户端断开”的噪音，其余异常照常打印。
+
+    Windows + Python 3.11 的解释器问题：浏览器刷新 / 关标签页时那条推送长连接被硬断开，asyncio 关闭这条
+    连接时会再抛一次 ConnectionResetError(10054)，被当成“回调异常”整段堆栈打进启动窗口。它不影响任何连接，
+    但会让窗口刷满红字。Linux 上没有这个问题。"""
+    import asyncio
+
+    async def _main():
+        loop = asyncio.get_running_loop()
+
+        def _quiet(loop, context):
+            exc = context.get('exception')
+            if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) and \
+                    '_call_connection_lost' in str(context.get('message', '')):
+                return
+            loop.default_exception_handler(context)
+
+        loop.set_exception_handler(_quiet)
+        await server.serve(sockets=[sock])
+
+    server.config.setup_event_loop()
+    asyncio.run(_main())
+
+
 if __name__ == "__main__":
+    # 服务器（Linux）默认跑在 UTC，日期公式 / 变动历史会差 8 小时：没显式设 TZ 时按东八区（GATE_TZ 可改）。
+    # Windows 没有 time.tzset()，按系统时区走，不受影响。
+    if hasattr(time, 'tzset') and not os.environ.get('TZ'):
+        os.environ['TZ'] = os.environ.get('GATE_TZ', 'Asia/Shanghai')
+        try:
+            time.tzset()
+        except Exception:
+            pass
     host = os.environ.get('GATE_HOST', '0.0.0.0')
     port = int(os.environ.get('GATE_PORT', '8614'))
     # 本机启动默认加密；云端托管（GATE_HTTPS=1，平台已在上层做了 HTTPS）或显式 GATE_SSL=0 时走明文
@@ -328,11 +367,17 @@ if __name__ == "__main__":
     print(f"牧马人商务合作看板（带登录，{scheme.upper()}）→ {url}")
     print(f"    登录页 {url}/login    用户管理 {url}/__auth/admin")
     if host == '0.0.0.0':
+        note = '（首次打开浏览器会提示证书不受信任，点“继续前往”）' if cert else ''
         for ip in _lan_names()[1]:
             if ip != '127.0.0.1':
-                print(f"    局域网同事访问：{scheme}://{ip}:{port}（首次打开浏览器会提示证书不受信任，点“继续前往”）")
+                print(f"    局域网同事访问：{scheme}://{ip}:{port}{note}")
     if not cert:
-        print('    注意：当前是明文 HTTP，密码在网络上不加密；只适合在本机临时调试。')
+        if os.environ.get('GATE_HTTPS') == '1':
+            print('    注意：GATE_HTTPS=1 表示“上层代理已做 HTTPS”，应用这一段是明文；'
+                  '请只监听 127.0.0.1（GATE_HOST=127.0.0.1），不要把这个端口暴露到外网。')
+        else:
+            print('    注意：当前是明文 HTTP，密码在网络上不加密；只适合在本机临时调试；'
+                  '对外请用域名 + 正式证书（见 README「部署到服务器」）。')
     import uvicorn
     try:
         sock = _exclusive_socket(host, port)
@@ -344,4 +389,4 @@ if __name__ == "__main__":
     if os.environ.get('GATE_OPEN_BROWSER', '1') != '0':
         # 等服务起来再开浏览器（以前是 bat 里先开，页面常常比服务早一步）
         threading.Timer(1.2, lambda: webbrowser.open(url + '/login')).start()
-    server.run(sockets=[sock])
+    _run_server(server, sock)
