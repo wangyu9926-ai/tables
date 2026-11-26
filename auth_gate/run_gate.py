@@ -116,10 +116,19 @@ def _exclusive_socket(host: str, port: int):
 # 新部署不该一上来就是 traceback 或者随机密码：数据库没配好、库里还没有管理员时，
 # 直接在启动窗口里问一遍，写好配置、建好表、建好管理员，再启动服务。已配置的部署完全跳过。
 
-def _tty():
-    """只有「标准输入和标准输出都是终端」才走交互向导。
-    后台/重定向启动时（nohup、管道、任务计划）绝不等待输入，直接给出配置指引后退出。
+def _stdin_mode():
+    """GATE_SETUP_STDIN=1：按行从标准输入读答案（无人值守部署 / 自动化安装）。
+    答案顺序 = 向导提问顺序：数据库地址、端口、用户名、库名、口令、（库不存在时）y、再输口令，
+    然后 管理员账号、密码、密码。"""
+    return os.environ.get('GATE_SETUP_STDIN', '') == '1'
+
+
+def _can_ask():
+    """能不能向部署者提问：标准输入按行给答案（GATE_SETUP_STDIN=1），或者标准输入和标准输出都是终端。
+    否则（nohup、重定向、任务计划）绝不等待输入，直接给出配置指引后退出。
     （Windows 下把 stdin 重定向到 NUL 时 isatty() 仍可能返回 True，所以必须连 stdout 一起看。）"""
+    if _stdin_mode():
+        return True
     try:
         return bool(sys.stdin.isatty() and sys.stdout.isatty())
     except Exception:
@@ -136,6 +145,11 @@ def _ask(label, default=''):
 
 
 def _ask_password(label='口令'):
+    if _stdin_mode():
+        try:
+            return sys.stdin.readline().rstrip('\r\n')
+        except Exception:
+            return ''
     import getpass
     try:
         return getpass.getpass(f'{label}（输入不回显）: ')
@@ -186,17 +200,20 @@ def _setup_db():
         except Exception as e:
             bad = e
             print(f'[setup] 数据库连不上：{e}')
-            if not _tty():
+            if not _can_ask():
                 print(f'    请检查环境变量 MUMA_DB_* 或 {_secrets_path()}')
                 sys.exit(2)
             print('    重新填写连接信息。')
     else:
-        if not _tty():
-            print('[setup] 还没有数据库配置。请设置环境变量：')
-            print('    MUMA_DB_HOST / MUMA_DB_PORT / MUMA_DB_USER / MUMA_DB_PASSWORD / MUMA_DB_NAME')
-            print('    或直接双击「启动看板-带登录.bat」，首次会在窗口里引导你填。')
+        if not _can_ask():
+            print('[setup] 还没有数据库配置。三选一：')
+            print('    1) 设置环境变量 MUMA_DB_HOST / MUMA_DB_PORT / MUMA_DB_USER / MUMA_DB_PASSWORD / MUMA_DB_NAME')
+            print('    2) 双击「启动看板-带登录.bat」，首次会在窗口里引导你填')
+            print('    3) 无人值守：设 GATE_SETUP_STDIN=1，把答案按行喂给标准输入（顺序见 README）')
             sys.exit(2)
         print('=== 首次部署：配置数据库 ===')
+        if not _stdin_mode():
+            print('（输入前请切到英文输入法；中文输入法会把字母和回车吃掉）')
 
     cur = {}
     try:
@@ -214,9 +231,7 @@ def _setup_db():
         sys.exit(2)
     for _attempt in range(3):
         pw = _ask_password('数据库口令')
-        if not pw:
-            print('    口令不能为空。')
-            continue
+        # 空口令不在这里拦：先拿它连一次，连得上就接受（本机开发库常见），但提醒只适合本机
         cfg = {'host': host, 'port': port_i, 'user': user, 'password': pw,
                'database': name, 'charset': 'utf8mb4', 'connect_timeout': 5}
         print('    正在连接…', end='', flush=True)
@@ -243,6 +258,8 @@ def _setup_db():
                         print(f'    创建失败：{e2}')
             continue
         print('成功')
+        if not pw:
+            print('    注意：数据库口令为空，只适合本机开发库；对外部署请给账号设置口令。')
         p = _write_secrets({'MUMA_DB_HOST': host, 'MUMA_DB_PORT': str(port_i), 'MUMA_DB_USER': user,
                             'MUMA_DB_PASSWORD': pw, 'MUMA_DB_NAME': name})
         print(f'    已保存到 {p}（已在 .gitignore 里，不要外发）')
@@ -267,11 +284,12 @@ def _setup_admin():
         has = q("SELECT id FROM kb_user WHERE role='admin' AND status=1 LIMIT 1", one=True)
     if has:
         return
-    if not _tty():
+    if not _can_ask():
         return                                     # 非交互：退回 gate 的随机引导（会打印在日志里）
     print('=== 创建管理员账号 ===')
     u = (_ask('管理员账号', 'admin') or 'admin')[:64]
-    while True:
+    pw = ''
+    for _try in range(5):                         # 最多问 5 轮：标准输入读完（EOF）时不会死循环
         pw = _ask_password('管理员密码（至少 6 位）')
         if len(pw) < 6:
             print('    太短了，至少 6 位。')
@@ -280,6 +298,9 @@ def _setup_admin():
             print('    两次不一致。')
             continue
         break
+    else:
+        print('[setup] 管理员密码没有设置成功，已停止。')
+        sys.exit(2)
     from gate import hash_password                 # 此时数据库已就绪，gate 可以安全导入
     ex("INSERT INTO kb_user(username,password_hash,real_name,role,status,created_by) "
        "VALUES(%s,%s,%s,'admin',1,'setup')", (u, hash_password(pw), u))
