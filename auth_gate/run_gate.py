@@ -112,6 +112,180 @@ def _exclusive_socket(host: str, port: int):
     return s
 
 
+# ==================== 首次部署向导 ====================
+# 新部署不该一上来就是 traceback 或者随机密码：数据库没配好、库里还没有管理员时，
+# 直接在启动窗口里问一遍，写好配置、建好表、建好管理员，再启动服务。已配置的部署完全跳过。
+
+def _tty():
+    """只有「标准输入和标准输出都是终端」才走交互向导。
+    后台/重定向启动时（nohup、管道、任务计划）绝不等待输入，直接给出配置指引后退出。
+    （Windows 下把 stdin 重定向到 NUL 时 isatty() 仍可能返回 True，所以必须连 stdout 一起看。）"""
+    try:
+        return bool(sys.stdin.isatty() and sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _ask(label, default=''):
+    tip = f'{label} [{default}]: ' if default else f'{label}: '
+    try:
+        v = input(tip).strip()
+    except EOFError:
+        return default
+    return v or default
+
+
+def _ask_password(label='口令'):
+    import getpass
+    try:
+        return getpass.getpass(f'{label}（输入不回显）: ')
+    except Exception:
+        try:
+            return input(f'{label}: ').strip()
+        except EOFError:
+            return ''
+
+
+def _secrets_path():
+    from pathlib import Path
+    return Path(os.environ.get('MUMA_SECRETS_PATH') or (_HERE.parent / 'backend' / 'local.secrets.json'))
+
+
+def _write_secrets(values):
+    import json as _json
+    p = _secrets_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    data = {}
+    if p.exists():
+        try:
+            data = _json.loads(p.read_text(encoding='utf-8')) or {}
+        except Exception:
+            data = {}
+    data.update(values)
+    p.write_text(_json.dumps(data, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+    try:
+        os.chmod(p, 0o600)
+    except Exception:
+        pass
+    return p
+
+
+def _setup_db():
+    """数据库没配好或连不上时，在启动窗口里问一遍；非交互环境给出明确指引后退出。"""
+    sys.path.insert(0, str(_HERE.parent))
+    try:
+        from backend import db as kbdb
+    except Exception as e:
+        print(f'[setup] 加载数据库配置失败：{e!r}')
+        sys.exit(2)
+    bad = None
+    if kbdb.configured():
+        try:
+            kbdb.probe()
+            return                                  # 已配好且连得上：跳过
+        except Exception as e:
+            bad = e
+            print(f'[setup] 数据库连不上：{e}')
+            if not _tty():
+                print(f'    请检查环境变量 MUMA_DB_* 或 {_secrets_path()}')
+                sys.exit(2)
+            print('    重新填写连接信息。')
+    else:
+        if not _tty():
+            print('[setup] 还没有数据库配置。请设置环境变量：')
+            print('    MUMA_DB_HOST / MUMA_DB_PORT / MUMA_DB_USER / MUMA_DB_PASSWORD / MUMA_DB_NAME')
+            print('    或直接双击「启动看板-带登录.bat」，首次会在窗口里引导你填。')
+            sys.exit(2)
+        print('=== 首次部署：配置数据库 ===')
+
+    cur = {}
+    try:
+        cur = kbdb._local_secrets()
+    except Exception:
+        pass
+    host = _ask('数据库地址', os.environ.get('MUMA_DB_HOST') or cur.get('MUMA_DB_HOST') or 'localhost')
+    port = _ask('端口', os.environ.get('MUMA_DB_PORT') or cur.get('MUMA_DB_PORT') or '3306')
+    user = _ask('用户名', os.environ.get('MUMA_DB_USER') or cur.get('MUMA_DB_USER') or 'root')
+    name = _ask('库名', os.environ.get('MUMA_DB_NAME') or cur.get('MUMA_DB_NAME') or 'kb_tables')
+    try:
+        port_i = int(port)
+    except ValueError:
+        print('[setup] 端口必须是数字。')
+        sys.exit(2)
+    for _attempt in range(3):
+        pw = _ask_password('数据库口令')
+        if not pw:
+            print('    口令不能为空。')
+            continue
+        cfg = {'host': host, 'port': port_i, 'user': user, 'password': pw,
+               'database': name, 'charset': 'utf8mb4', 'connect_timeout': 5}
+        print('    正在连接…', end='', flush=True)
+        try:
+            kbdb.probe(cfg)
+        except Exception as e:
+            print('失败')
+            print(f'    {e}')
+            if 'Unknown database' in str(e) or '(1049' in str(e):
+                if _ask('    库不存在，现在创建？(y/N)', 'N').lower() in ('y', 'yes', '是'):
+                    try:
+                        import pymysql
+                        c2 = dict(cfg)
+                        c2.pop('database', None)
+                        con = pymysql.connect(**c2)
+                        try:
+                            with con.cursor() as cc:
+                                cc.execute('CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4' % name)
+                            con.commit()
+                        finally:
+                            con.close()
+                        print(f'    已创建库 {name}')
+                    except Exception as e2:
+                        print(f'    创建失败：{e2}')
+            continue
+        print('成功')
+        p = _write_secrets({'MUMA_DB_HOST': host, 'MUMA_DB_PORT': str(port_i), 'MUMA_DB_USER': user,
+                            'MUMA_DB_PASSWORD': pw, 'MUMA_DB_NAME': name})
+        print(f'    已保存到 {p}（已在 .gitignore 里，不要外发）')
+        kbdb.reload()
+        return
+    print('[setup] 数据库没有配好，已停止。')
+    sys.exit(2)
+
+
+def _setup_admin():
+    """库里还没有管理员时，让部署者自己定账号密码（不再随机生成）。"""
+    from backend.engine import ex, init_schema, q
+    try:
+        has = q("SELECT id FROM kb_user WHERE role='admin' AND status=1 LIMIT 1", one=True)
+    except Exception:
+        # 空库：还没有 kb_* 表，先建表再判断（已配置的部署只多一条很便宜的查询）
+        try:
+            init_schema()
+        except Exception as e:
+            print(f'[setup] 初始化表结构失败：{e}')
+            sys.exit(2)
+        has = q("SELECT id FROM kb_user WHERE role='admin' AND status=1 LIMIT 1", one=True)
+    if has:
+        return
+    if not _tty():
+        return                                     # 非交互：退回 gate 的随机引导（会打印在日志里）
+    print('=== 创建管理员账号 ===')
+    u = (_ask('管理员账号', 'admin') or 'admin')[:64]
+    while True:
+        pw = _ask_password('管理员密码（至少 6 位）')
+        if len(pw) < 6:
+            print('    太短了，至少 6 位。')
+            continue
+        if _ask_password('再输一次') != pw:
+            print('    两次不一致。')
+            continue
+        break
+    from gate import hash_password                 # 此时数据库已就绪，gate 可以安全导入
+    ex("INSERT INTO kb_user(username,password_hash,real_name,role,status,created_by) "
+       "VALUES(%s,%s,%s,'admin',1,'setup')", (u, hash_password(pw), u))
+    print(f'    管理员 {u} 已创建，登录后请尽快改密码。')
+
+
 if __name__ == "__main__":
     host = os.environ.get('GATE_HOST', '0.0.0.0')
     port = int(os.environ.get('GATE_PORT', '8614'))
@@ -120,7 +294,10 @@ if __name__ == "__main__":
     cert = ensure_cert() if os.environ.get('GATE_SSL', default_ssl) != '0' else None
     if cert:
         os.environ['GATE_COOKIE_SECURE'] = '1'     # 走 HTTPS：Cookie 标记为 Secure。必须在导入 gate 之前设
-    # 这里才开始导入 gate：它导入时会读环境变量、初始化表结构
+    # 首次部署：先确认数据库配置和管理员账号（已配好的部署会直接跳过）
+    _setup_db()
+    _setup_admin()
+    # 这里才开始导入 gate：它导入时会读环境变量、挂门卫层
     from gate import app, ensure_admin_exists     # noqa: E402  加载原应用 + 挂门卫层
 
     ensure_admin_exists()
