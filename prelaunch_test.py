@@ -969,6 +969,7 @@ check('总表删镜像行 200', r.status_code == 200, r.text[:80])
 left = j(admin.get(f'/api/tables/{ST2}/rows?size=0'))['rows']
 check('总表删镜像行，子表那行一起软删', not any(x['data'].get('姓名') == '总表改回子表' for x in left), str(left)[:160])
 from backend.engine import q as _q  # noqa: E402
+admin.get(f'/api/tables/{ST2}/audit?limit=5')      # 审计是服务端后台批量写的：先让它把队列落盘再查库（本机库快，不刷会读到空）
 check('回写子表记了审计 sync_back', bool(_q('SELECT id FROM kb_audit WHERE table_id=%s AND action=%s LIMIT 1',
                                           (ST2, 'sync_back'))), '')
 
