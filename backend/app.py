@@ -817,6 +817,7 @@ def create_table(req: TableReq):
             raise HTTPException(400, '列定义格式不对：每一列都必须是对象')
     labels = [{'key': slug(c.get('key') or c.get('label') or ''),
                'label': str(c.get('label') or '')} for c in defs]
+    pending = {'name': name, 'labels': {x['label'].strip() for x in labels}}
     cols_out = []
     used = set()
     for i, c in enumerate(defs):
@@ -833,7 +834,8 @@ def create_table(req: TableReq):
             raise HTTPException(400, f'未知列类型 {t}')
         expr = c.get('expr') if t == 'formula' else None
         if t == 'formula':
-            ok, msg = validate_expr(expr, labels, req.project or '')
+            # 表还没建：公式里引用本表时按这份定义来判断
+            ok, msg = validate_expr(expr, labels, req.project or '', pending=pending)
             if not ok:
                 raise HTTPException(400, f'公式列「{label}」：{msg}')
         cols_out.append((key, label, t, _jdump_col(c.get('options')), _jdump_col(c.get('option_colors')), expr,

@@ -469,7 +469,9 @@ _col1 = next(c for c in _t1['columns'] if c.get('id'))
 _order0 = [c['id'] for c in sorted(_t1['columns'], key=lambda c: c.get('sort') or 0)]
 _bad_tables = [(TAG + '坏列定义', [{'label': 'ok'}, None, 1]), (TAG + '超长列名', [{'label': 'x' * 300}]),
                (TAG + '非法公式', [{'label': 'f', 'type': 'formula', 'expr': 5}]),
-               (TAG + '非法key', [{'label': 'f', 'type': 'formula', 'expr': '{名称}*2'}, {'label': 'k', 'key': {'a': 1}}])]
+               (TAG + '公式引用不存在的列', [{'label': 'f', 'type': 'formula', 'expr': '{不存在}*2'}]),
+               (TAG + '公式引用不存在的表', [{'label': '名称', 'type': 'text'},
+                                          {'label': 'f', 'type': 'formula', 'expr': 'COUNTIF("没有这张表","名称",{名称})'}])]
 for _n, _c in _bad_tables:
     r = admin.post('/api/tables', {'name': _n, 'project': PRJ, 'columns': _c})
     check(f'建表列定义不合法（{_n[len(TAG):]}）→ 400', r.status_code == 400, f'{r.status_code} {r.text[:80]}')

@@ -1178,9 +1178,11 @@ def compute_formulas(row, cols, project=None):
     return out
 
 
-def validate_expr(expr, cols, project=None, xt_check=None):
+def validate_expr(expr, cols, project=None, xt_check=None, pending=None):
     """建/改公式列时校验：引用列存在、跨表函数参数合法、语法可解析。
-    xt_check(table_id) -> bool：给非管理员作者用的，跨表函数引用的每一张表都要通过它。"""
+    xt_check(table_id) -> bool：给非管理员作者用的，跨表函数引用的每一张表都要通过它。
+    pending: 正在新建、还没落库的那张表 {'name': 表名, 'labels': {列名…}}。建表是先校验全部列定义再落库，
+    公式引用本表（COUNTIF("本表名",…)）时它还不存在，要按这份定义来判，且不能去查库——查不到会被缓存成“不存在”。"""
     if not isinstance(expr, str):
         return False, '公式必须是文本'
     if not expr or not expr.strip():
@@ -1228,12 +1230,15 @@ def validate_expr(expr, cols, project=None, xt_check=None):
         if not tname or not mfield:
             return False, (f'{fn} 的表名、匹配字段要用双引号写死，'
                            f'例如 LOOKUP("达人建联表-抖音·Sheet1","达人昵称",{{达人昵称}},"粉丝数")')
-        t = _xt_table(tname, project)
+        if pending and tname == pending.get('name'):
+            is_pending, t = True, pending
+        else:
+            is_pending, t = False, _xt_table(tname, project)
         if not t:
             return False, f'引用的表「{tname}」不存在或不在当前项目'
-        if xt_check is not None and not xt_check(t['id']):
+        if xt_check is not None and not is_pending and not xt_check(t['id']):
             return False, f'没有权限引用表「{tname}」'
-        tcols = {c['label'] for c in q(
+        tcols = set(pending['labels']) if is_pending else {c['label'] for c in q(
             "SELECT label FROM kb_column WHERE table_id=%s AND deleted=0", (t['id'],))}
         if mfield not in tcols:
             return False, f'表「{tname}」没有字段「{mfield}」'
