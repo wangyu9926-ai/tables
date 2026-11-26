@@ -1396,14 +1396,16 @@ def list_rows(tid: int, page: int = 1, size: int = 50, q: str = '',
 
         def keyf(r):
             v = r['data'].get(sort)
+            # 排序键必须同构：公式列 / 数字列里可能既有算得出的数、又有算不出的文本，
+            # 直接混着返回 float 和 str 会让比较抛 TypeError（整页 500）。
             if v is None or str(v).strip() == '':
-                return (1, 0)
+                return (1, 0, '')
             if is_num:
                 try:
-                    return (0, float(str(v).replace(',', '')))
+                    return (0, 0, float(str(v).replace(',', '')))
                 except Exception:
                     pass
-            return (0, str(v))
+            return (0, 1, str(v))
         # 不能原地 sort：data_rows 可能直接引用共享视图缓存
         data_rows = sorted(data_rows, key=keyf, reverse=(dir == 'desc'))
 
