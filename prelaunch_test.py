@@ -436,6 +436,118 @@ check('高级筛选 日期区间', d['total'] == 1, str(d['total']))
 f = json.dumps({'logic': 'and', 'conds': [{'key': '早就删掉的列', 'op': 'contains', 'value': 'x'}]})
 d = j(admin.get(f'/api/tables/{T1}/rows?size=0&filters=' + requests.utils.quote(f)))
 check('高级筛选 引用了不存在的列：忽略这条，不是筛成空', d['total'] == 2, str(d['total']))
+
+# 畸形输入只能得到 4xx，不能 500（上线前最后一轮全接口扫描修掉的那批，逐类钉住）
+_q = requests.utils.quote
+for raw in ('[[[]]]', '5', '"s"', 'true', 'null', '[' * 200 + ']' * 200):
+    r = admin.get(f'/api/tables/{T1}/rows?size=1&filters=' + _q(raw))
+    check(f'筛选参数不是对象 {_q(raw)[:16]}：不 500', r.status_code == 200, f'{r.status_code}')
+for spec in (5, True, {'from': 123, 'to': {'a': 1}}, {'from': [1], 'to': ''}, ['（空）', 5]):
+    r = admin.get(f'/api/tables/{T1}/rows?size=0&filters=' + _q(json.dumps({'日期': spec})))
+    check(f'筛选条件类型不对 {str(spec)[:22]}：不 500', r.status_code == 200, f'{r.status_code} {r.text[:80]}')
+f = json.dumps({'金额': 5})
+r = admin.get(f'/api/tables/{T1}/rows?size=0&filters=' + _q(f))
+check('筛选条件是数字：按不筛处理，仍返回全部行', r.status_code == 200 and j(r).get('total') == 2,
+      f'{r.status_code} {r.text[:80]}')
+f = json.dumps({'logic': 'and', 'conds': [{'key': ['金额'], 'op': 'eq', 'value': 1},
+                                          {'key': '金额', 'op': ['gte'], 'value': 'x'},
+                                          {'key': {'a': 1}, 'op': 'eq', 'value': 1}]})
+r = admin.get(f'/api/tables/{T1}/rows?size=0&filters=' + _q(f))
+check('高级筛选 key / op 不是文本：忽略该条件，不 500', r.status_code == 200 and j(r)['total'] == 2, f'{r.status_code}')
+f = json.dumps({'logic': 'and', 'conds': [{'key': '金额', 'op': 'between', 'value': [1], 'value2': {'a': 1}}]})
+r = admin.get(f'/api/tables/{T1}/rows?size=0&filters=' + _q(f))
+check('高级筛选 区间值是数组 / 对象：不 500', r.status_code == 200, f'{r.status_code}')
+for lim in ('-1', '99999999999999999999'):
+    r = admin.get(f'/api/tables/{T1}/audit?limit={lim}')
+    check(f'变更历史 limit={lim[:12]}：不 500', r.status_code == 200, f'{r.status_code}')
+r = admin.get(f'/api/tables/{T1}/rows/by-ids?ids=' + _q('²,1,abc,99999999999999999999'))
+check('按 ID 取行 含 ² / 超长数字：不 500', r.status_code == 200, f'{r.status_code}')
+_meta = j(admin.get('/api/meta'))['tables']
+_t1 = next(t for t in _meta if t['id'] == T1)
+_t2 = next(t for t in _meta if t['id'] == T2)
+_col1 = next(c for c in _t1['columns'] if c.get('id'))
+_order0 = [c['id'] for c in sorted(_t1['columns'], key=lambda c: c.get('sort') or 0)]
+_bad_tables = [(TAG + '坏列定义', [{'label': 'ok'}, None, 1]), (TAG + '超长列名', [{'label': 'x' * 300}]),
+               (TAG + '非法公式', [{'label': 'f', 'type': 'formula', 'expr': 5}]),
+               (TAG + '非法key', [{'label': 'f', 'type': 'formula', 'expr': '{名称}*2'}, {'label': 'k', 'key': {'a': 1}}])]
+for _n, _c in _bad_tables:
+    r = admin.post('/api/tables', {'name': _n, 'project': PRJ, 'columns': _c})
+    check(f'建表列定义不合法（{_n[len(TAG):]}）→ 400', r.status_code == 400, f'{r.status_code} {r.text[:80]}')
+    check(f'……没有留下空壳表（{_n[len(TAG):]}）', not any(t['name'] == _n for t in j(admin.get('/api/meta'))['tables']), _n)
+r = admin.post('/api/tables', {'name': 'x' * 300})
+check('表名超长 → 400', r.status_code == 400, f'{r.status_code}')
+r = admin.post('/api/projects', {'name': 'x' * 300})
+check('项目名超长 → 400', r.status_code == 400, f'{r.status_code}')
+r = admin.post('/api/projects', {'name': TAG + '图标超长', 'icon': '📄' * 20})
+check('项目图标超长 → 400', r.status_code == 400, f'{r.status_code}')
+r = admin.patch(f'/api/tables/{T2}', {'name': _t1['name']})
+check('把表名改成已有名字 → 409', r.status_code == 409, f'{r.status_code} {r.text[:80]}')
+r = admin.patch(f'/api/tables/{T2}', {'name': 'y' * 300})
+check('表改名超长 → 400', r.status_code == 400, f'{r.status_code}')
+r = admin.post(f'/api/tables/{T1}/columns/sort', {'order': ['a', None, {}, 99999999999999999999], 'hidden': ['x', None]})
+_order1 = [c['id'] for c in sorted(next(t for t in j(admin.get('/api/meta'))['tables'] if t['id'] == T1)['columns'],
+                                   key=lambda c: c.get('sort') or 0)]
+check('列排序含非整数 → 200 且列顺序不变', r.status_code == 200 and _order0 == _order1, f'{r.status_code} {_order1}')
+r = admin.post('/api/groups/sort', {'project': PRJ, 'groups': [{'a': 1}, 1, 'x']})
+check('分组排序含非文本 → 200', r.status_code == 200, f'{r.status_code} {r.text[:80]}')
+r = admin.post(f'/api/groups/{_q("x")}/sort', {'tids': ['a', None, {}, T1]})
+check('Sheet 排序含非整数 → 200', r.status_code == 200, f'{r.status_code} {r.text[:80]}')
+for w in (99999999999999999999, -40000):
+    r = admin.patch(f'/api/tables/{T1}/columns/{_col1["id"]}', {'label': _col1['label'], 'width': w})
+    check(f'列宽越界 {str(w)[:12]} → 不 500', r.status_code == 200, f'{r.status_code}')
+_H = {'Content-Type': 'application/json'}
+for raw in ('{"data":Infinity}', 'NaN', 'Infinity', '{"data":{"金额":NaN}}', '[]', 'null', '"s"'):
+    r = admin.req('POST', f'/api/tables/{T1}/rows', data=raw, headers=_H)
+    check(f'行接口请求体不合法 {_q(raw)[:20]} → 4xx', 400 <= r.status_code < 500, f'{r.status_code} {r.text[:60]}')
+r = admin.req('POST', f'/api/tables/{T1}/columns', data='{"label":"c","type":"select","options":[Infinity]}', headers=_H)
+check('列选项含 Infinity → 4xx', 400 <= r.status_code < 500, f'{r.status_code}')
+r = admin.req('PATCH', f'/api/tables/{T1}/rows/1', data='{"data":', headers=_H)
+check('请求体 JSON 截断 → 4xx', 400 <= r.status_code < 500, f'{r.status_code}')
+_XFF = {'X-Forwarded-For': '203.0.113.250'}        # 失败登录记在测试 IP 上，不占本机 IP 的失败次数
+for body in ({'username': {'a': 1}, 'password': 'x'}, {'username': ['x'], 'password': 'x'},
+             {'username': 5, 'password': 'x'}, {'username': '__nosuchuser__', 'password': {'a': 1}},
+             {'username': '__nosuchuser__', 'password': 5}, {'username': '__nosuchuser__', 'password': [1]}):
+    r = guest.post('/__auth/login', body, headers=_XFF)
+    check(f'登录接口账号 / 密码不是文本 {str(body)[:26]}：不 500', r.status_code in (400, 401, 429), f'{r.status_code}')
+COMBO = TAG + 'combo'
+admin.post('/__auth/users', {'username': COMBO, 'password': 'test123456', 'role': 'staff'})
+combo_id = next((u['id'] for u in j(admin.get('/__auth/users'))['users'] if u['username'] == COMBO), None)
+check('建临时账号（组合更新用）', combo_id is not None, str(combo_id))
+r = admin.patch(f'/__auth/users/{combo_id}', {'password': 'test654321', 'status': 0})
+check('重置密码 + 停用 同一个请求 → 200', r.status_code == 200, f'{r.status_code} {r.text[:80]}')
+r = admin.patch(f'/__auth/users/{combo_id}', {'password': 'test654321', 'status': 1, 'role': 'staff'})
+check('重置密码 + 改角色 + 启用 同一个请求 → 200', r.status_code == 200, f'{r.status_code} {r.text[:80]}')
+for body in ({'status': 'x'}, {'status': [0]}, {'status': 1.5}, {'status': 2}, {'password': ['12345678']},
+             {'password': {'a': 1}}, {'password': 1234567890}, {'real_name': ['r']}):
+    r = admin.patch(f'/__auth/users/{combo_id}', body)
+    check(f'改账号字段类型不对 {str(body)[:24]} → 400', r.status_code == 400, f'{r.status_code} {r.text[:60]}')
+for body in ({'username': ['x'], 'password': '12345678'}, {'username': {'a': 1}, 'password': '12345678'},
+             {'username': '__pretest__pw', 'password': ['12345678']}, {'username': '__pretest__pw', 'password': 12345678},
+             {'username': '__pretest__pw', 'password': '12345678', 'real_name': ['r']}):
+    r = admin.post('/__auth/users', body)
+    check(f'建账号字段类型不对 {str(body)[:28]} → 400', r.status_code == 400, f'{r.status_code} {r.text[:60]}')
+r = admin.get('/__auth/grants?uid=' + _q('²'))
+check('授权查询 uid=² → 400', r.status_code == 400, f'{r.status_code}')
+check('……畸形探测没有留下多余账号', not any(u['username'] == '__pretest__pw' for u in j(admin.get('/__auth/users'))['users']), '')
+_buf = io.BytesIO()
+try:
+    import openpyxl
+    _wb = openpyxl.Workbook()
+    _wb.active.append(['名称'])
+    _wb.active.append(['甲'])
+    _wb.save(_buf)
+    for cfg in (json.dumps({'target': 'new', 'project': PRJ, 'name': TAG + '导入坏配置', 'header_row': 'abc'}),
+                json.dumps({'target': 'table', 'table_id': 'abc'}),
+                json.dumps({'target': 'new', 'project': PRJ, 'name': 'x' * 300}),
+                json.dumps({'target': 'new', 'project': PRJ, 'name': TAG + '导入坏列',
+                            'columns': [{'source': 0, 'label': 'x' * 300}]})):
+        r = admin.req('POST', '/api/import/commit',
+                      files={'file': ('x.xlsx', _buf.getvalue(), 'application/octet-stream')}, data={'config': cfg})
+        check(f'导入配置不合法 {cfg[10:30]} → 400', r.status_code == 400, f'{r.status_code} {r.text[:60]}')
+    check('……导入没有留下空壳表',
+          not any(t['name'].startswith(TAG + '导入坏') for t in j(admin.get('/api/meta'))['tables']), '')
+except ImportError:
+    print('SKIP  导入畸形配置（环境里没有 openpyxl）')
 d = j(admin.get(f'/api/tables/{T1}/rows?size=0&q=李四'))
 check('搜索关键词', d['total'] == 1, str(d['total']))
 d = j(admin.get(f'/api/tables/{T1}/rows?size=1&page=2'))

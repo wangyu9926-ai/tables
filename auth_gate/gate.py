@@ -855,12 +855,11 @@ def _gate(request):
         if not _can_users(user):
             return _resp_json({'detail': '需要账号管理权限'}, 403)
         d = request.state.gate_body
-        u, pw = d.get('username'), d.get('password')
-        if not isinstance(u, str) or not isinstance(pw, str):
-            return _resp_json({'detail': '账号和密码必须是文本'}, 400)
+        u, pw, real = d.get('username'), d.get('password'), d.get('real_name')
+        if not isinstance(u, str) or not isinstance(pw, str) or (real is not None and not isinstance(real, str)):
+            return _resp_json({'detail': '账号、密码和姓名必须是文本'}, 400)
         u = u.strip()
-        real = d.get('real_name')
-        real = real.strip()[:64] if isinstance(real, str) else ''
+        real = (real or '').strip()[:64]
         if not re.fullmatch(r'[A-Za-z0-9_.-]{2,32}', u):
             return _resp_json({'detail': '账号需 2~32 位字母/数字/_.-'}, 400)
         if len(pw) < 6:
@@ -905,7 +904,9 @@ def _gate(request):
             sets.append('password_hash=%s'); args.append(hash_password(d['password']))
             sets.append('token_ver=token_ver+1')      # 被重置密码的账号，手里的旧凭证全部失效
         if d.get('real_name') is not None:
-            sets.append('real_name=%s'); args.append(str(d['real_name']).strip()[:64])
+            if not isinstance(d['real_name'], str):
+                return _resp_json({'detail': '姓名必须是文本'}, 400)
+            sets.append('real_name=%s'); args.append(d['real_name'].strip()[:64])
         if d.get('status') is not None:
             st = d['status']
             if not isinstance(st, int) or isinstance(st, bool) or st not in (0, 1):

@@ -2543,18 +2543,16 @@ async def import_commit(file: UploadFile = File(...), config: str = Form(...)):
     return await run_in_threadpool(_imp_commit_sync, raw, filename, cfg)
 
 
-def _imp_int(v, default=None):
-    """导入配置里的数字字段（请求体里的 JSON 字符串，没有任何类型约束）。"""
+def _imp_int(v):
+    """导入配置里的数字字段（请求体里的 JSON 字符串，没有任何类型约束）：转不成整数就回 400。"""
     try:
         return int(float(v))
     except (TypeError, ValueError, OverflowError):
-        if default is not None:
-            return default
         raise HTTPException(400, '导入配置里的数字不合法')
 
 
 def _imp_commit_sync(raw, filename, cfg):
-    header_row = _imp_int(cfg.get('header_row'), 1)
+    header_row = _imp_int(cfg.get('header_row') or 1)
     sheets, sel, headers, rows = _imp_load(raw, filename, cfg.get('sheet') or '', header_row)
     target = cfg.get('target') or 'table'
 
@@ -2650,7 +2648,7 @@ def _imp_commit_sync(raw, filename, cfg):
         return {'ok': True, 'table_id': tid, 'name': name, 'inserted': len(out_rows),
                 'skipped': len(rows) - len(out_rows), 'columns': len(cols)}
 
-    tid = _imp_int(cfg.get('table_id'), 0)
+    tid = _imp_int(cfg.get('table_id') or 0)
     if not tid:
         raise HTTPException(400, '缺少目标表')
     t = _need(tid)
