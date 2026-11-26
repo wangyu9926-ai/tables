@@ -1417,8 +1417,8 @@ def list_rows(tid: int, page: int = 1, size: int = 50, q: str = '',
     fcs = [c for c in cols if c['type'] == 'formula']
     out = []
     for r in page_rows:
-        d = compute_formulas(r['data'], cols, project) if fcs else r['data']
-        out.append({'id': r['id'], 'data': d, 'ver': r['ver'],
+        d = compute_formulas(r['data'], cols, project) if fcs else dict(r['data'])
+        out.append({'id': r['id'], 'data': _json_safe_numbers(d), 'ver': r['ver'],
                     'created_at': _ts(r['created_at']), 'updated_at': _ts(r['updated_at'])})
     return _json_response({'rows': out, 'total': total, 'facets': facets})
 
@@ -1649,7 +1649,7 @@ def update_row(tid: int, rid: int, req: RowReq):
     # 所以先把本表的索引作废（中间件在响应之后还会再作废一次，重复无害）。
     invalidate_xt_table(tid)
     return {'ok': True, 'ver': newver, 'synced_back': back,
-            'row': compute_formulas(merged, cols, _t.get('project') or '')}
+            'row': _json_safe_numbers(compute_formulas(merged, cols, _t.get('project') or ''))}
 
 
 @app.delete("/api/tables/{tid}/rows/{rid}")
