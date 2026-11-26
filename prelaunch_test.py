@@ -102,6 +102,8 @@ def cleanup():
         for u in us:
             if str(u['username']).startswith(TAG):
                 admin.delete(f"/__auth/users/{u['id']}")
+        # 上面这些接口删除自己也会写审计（delete_table 等），同样在服务端后台批量落盘：等它写完再删审计
+        time.sleep(0.8)
         from backend.engine import ex, q
         tids2 = [r['id'] for r in q('SELECT id FROM kb_table WHERE name LIKE %s', (TAG + '%',))]
         if tids2:

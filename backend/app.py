@@ -759,7 +759,7 @@ def _renumber_formula_refs(project, pairs):
     pairs = [(o, n) for o, n in (pairs or []) if o and n and o != n]
     if not pairs or not project:
         return
-    rows = q("SELECT c.id, c.expr FROM kb_column c JOIN kb_table t ON t.id = c.table_id "
+    rows = q("SELECT c.id, c.table_id, c.expr FROM kb_column c JOIN kb_table t ON t.id = c.table_id "
              "WHERE c.type='formula' AND c.deleted=0 AND t.deleted=0 AND t.project=%s", (project,))
     for r in rows:
         e = r['expr']
@@ -770,7 +770,8 @@ def _renumber_formula_refs(project, pairs):
             ne = ne.replace('"' + old + '"', '"' + new + '"')
         if ne != e:
             ex("UPDATE kb_column SET expr=%s WHERE id=%s", (ne, r['id']))
-            audit(r['id'], None, 'update_column', {'expr_ref': 'table_renamed'})
+            # 记在公式所在的那张表名下（之前错记成列 id，这张表的变动历史里看不到这条）
+            audit(r['table_id'], None, 'update_column', {'expr_ref': 'table_renamed'})
 
 
 # ==================== 表 CRUD ====================
