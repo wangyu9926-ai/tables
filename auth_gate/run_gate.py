@@ -314,28 +314,37 @@ def _setup_admin():
 
 
 def _run_server(server, sock):
-    """在 uvicorn 用的事件循环上装一个异常处理器：只吞掉一种“客户端断开”的噪音，其余异常照常打印。
+    """用 uvicorn 自己的事件循环工厂建循环，装上异常处理器后再跑 serve（只吞掉一种“客户端断开”的噪音）。
 
     Windows + Python 3.11 的解释器问题：浏览器刷新 / 关标签页时那条推送长连接被硬断开，asyncio 关闭这条
     连接时会再抛一次 ConnectionResetError(10054)，被当成“回调异常”整段堆栈打进启动窗口。它不影响任何连接，
     但会让窗口刷满红字。Linux 上没有这个问题。"""
     import asyncio
 
-    async def _main():
-        loop = asyncio.get_running_loop()
+    try:
+        factory = server.config.get_loop_factory()      # uvicorn 0.36+；返回事件循环工厂（Windows 上是 ProactorEventLoop）
+    except Exception:
+        factory = None
+    loop = factory() if factory else asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-        def _quiet(loop, context):
-            exc = context.get('exception')
-            if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) and \
-                    '_call_connection_lost' in str(context.get('message', '')):
-                return
-            loop.default_exception_handler(context)
+    def _quiet(lp, context):
+        exc = context.get('exception')
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) and \
+                '_call_connection_lost' in str(context.get('message', '')):
+            return
+        lp.default_exception_handler(context)
 
-        loop.set_exception_handler(_quiet)
-        await server.serve(sockets=[sock])
-
-    server.config.setup_event_loop()
-    asyncio.run(_main())
+    loop.set_exception_handler(_quiet)
+    try:
+        loop.run_until_complete(server.serve(sockets=[sock]))
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 if __name__ == "__main__":

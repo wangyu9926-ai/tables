@@ -521,9 +521,11 @@ def norm_val(col, v):
         s = str(v).strip().replace(',', '').replace('，', '')
         m = re.fullmatch(r'(-?\d+(?:\.\d+)?)\s*(亿|万|千|w|W|k|K)?%?', s)
         if m:
-            n = float(m.group(1))
-            n *= {'亿': 1e8, '万': 1e4, 'w': 1e4, 'W': 1e4,
-                  '千': 1e3, 'k': 1e3, 'K': 1e3}.get(m.group(2) or '', 1)
+            num, unit = m.group(1), m.group(2) or ''
+            if not unit and '.' not in num:
+                return int(num)           # 纯整数直接按整数解析：18 位订单号 / 商品 ID 经过 float 会丢末尾几位
+            n = float(num) * {'亿': 1e8, '万': 1e4, 'w': 1e4, 'W': 1e4,
+                              '千': 1e3, 'k': 1e3, 'K': 1e3}.get(unit, 1)
             return int(n) if n.is_integer() else n
         try:
             f = float(s)
