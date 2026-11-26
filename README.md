@@ -43,6 +43,27 @@
    或用表页「导入」上传 xlsx / xlsm / csv（支持列映射与类型），也可以走 `POST /api/in/{表ID}` 用写入密钥灌数据。
 5. 空库时侧栏「仪表盘」也是空的，用表页「分析」自己建；汇总同步、批注、视图等都要在有了自己的表之后才有内容。
 
+## 部署常见问题
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| 双击 `启动看板-带登录.bat` 窗口一闪就关，或报 `'xxx' 不是内部或外部命令` | `.bat` 必须是 **GBK + CRLF**（仓库带了 `.gitattributes`，别用编辑器另存成 UTF-8/LF）。临时排查：在窗口里手动跑 `python auth_gate/run_gate.py` 看报错 |
+| `[gate] 端口 8614 绑定失败` | 已有一个实例在跑：`netstat -ano \| findstr :8614` 找 PID 结束它；或换端口 `set GATE_PORT=8615` 再启动 |
+| 启动时一直问数据库 / 连不上 | 云数据库要把当前出口 IP 加进白名单；内网库确认地址端口；口令错会提示重填。想跳过向导就直接配环境变量 `MUMA_DB_*` |
+| `Access denied for user ...` | 账号没有这个库的权限：给应用单独开一个最小权限账号（`SELECT/INSERT/UPDATE/DELETE/CREATE/ALTER`） |
+| `Unknown database ...` | 向导里选 `y` 自动建库；或先手动 `CREATE DATABASE 库名 CHARACTER SET utf8mb4` |
+| 浏览器提示“不是私密连接”/“不安全” | 自签证书的正常提示，点「高级 → 继续前往」。想彻底不提示：把 `auth_gate/certs/server.crt` 装进「受信任的根证书颁发机构」（当前用户即可，不需要管理员权限）；**浏览器要完全退出再打开**才会读到新证书 |
+| 换了 IP 或机器名后证书报错 | 证书里写死了地址：删掉 `auth_gate/certs/` 再启动会按新地址重新生成，然后重新信任一次 |
+| 登录成功后马上又回到登录页 | 地址用错了：HTTPS 模式下 Cookie 带 `Secure`，必须用 `https://IP:端口` 访问；明文 `http://` 连不上（8614 直接拒绝） |
+| 登录进去之后什么都没有 | 空库就是这样。新建项目 → 新建表，或用「导入」上传 Excel/CSV；仪表盘也要自己建 |
+| 同事打不开，你自己这台正常 | 防火墙放行端口；确认启动时 `GATE_HOST` 是 `0.0.0.0`（默认）；用启动窗口里打印的局域网地址 |
+| 改了前端但页面没变 | 页面按文件版本走协商缓存，普通刷新即可；**后端（Python）改动必须重启服务** |
+| 忘了管理员密码 | 配好数据库连接后，在项目目录的 cmd 窗口里执行（会同时让旧登录失效；写进 .bat 时把 `%s` 写成 `%%s`）：<br>`python -c "import sys; sys.path.insert(0,'.'); from auth_gate.gate import hash_password; from backend.engine import ex; ex('UPDATE kb_user SET password_hash=%s, token_ver=token_ver+1 WHERE username=\'admin\'', (hash_password('新密码'),)); print('ok')"` |
+| 后台/计划任务启动后进程退出 | 非交互启动不会询问配置：先配 `MUMA_DB_*`，或先在桌面上跑一次向导 |
+| 升级到新版本 | `git pull` → 重启服务；表结构在启动时自动补齐（`init_schema` 幂等），已有数据不动 |
+
+> 排查顺序：先看启动窗口最后 3 行 → 再用 `https://127.0.0.1:端口/healthz` 确认服务活着 → 最后看数据库连接（`python -c "import sys;sys.path.insert(0,'.');from backend import db;db.probe();print('db ok')"`）。
+
 ## 安全（登录网关 / 权限 / 内容安全策略）
 
 - **登录网关**：独立账号体系（`kb_user` / `kb_perm`），中间件在应用之外先拦一道：未登录访问 `/` 只返回登录页，
