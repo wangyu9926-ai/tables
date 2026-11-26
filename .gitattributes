@@ -1,0 +1,8 @@
+# 换行规则：代码统一 LF；Windows 启动脚本必须 CRLF（cmd 遇到 LF 会解析错位）
+* text=auto
+*.bat text eol=crlf
+*.py text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.sql text eol=lf

@@ -1,24 +1,23 @@
-# ---- 敏感配置（绝不入库）----
-backend/.env
-.env
+# ZCode Sites 部署产物（150MB，构建生成）
+.zcode-site/
+.zcode-site.json
 
-# ---- 参考用的其他仓库克隆（不属于本项目）----
-eias-data-platform/
-
-# ---- 运行时产物 ----
-backend/runtime/
-backend/app/mt_files/
-backend/app/__pycache__/
-backend/app/mtables/__pycache__/
+# Python
 __pycache__/
 *.pyc
 
-# ---- 日志 ----
-.uvicorn.log
-.uvicicorn-test.log
-*.log
+# 机密：不提交、不随代码外发
+backend/local.secrets.json
+auth_gate/secret.key
+auth_gate/certs/
 
-# ---- 系统杂项 ----
-Thumbs.db
-.DS_Store
-.zcode/
+# 运行产物 / 本机元数据
+*.log
+.perf_ids.json
+viewer.json
+gui-test-screenshots/
+
+# 迁移数据：真实业务数据与整库备份，绝不进仓库（迁移脚本 *.py 保留）
+migration/*.json
+migration/*.sql.gz
+migration/legacy_code/
