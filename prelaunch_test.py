@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """上线前全量回归：默认打本机 https://127.0.0.1:8614（服务现在默认走 HTTPS、自签证书），
-地址可用环境变量 KB_TEST_BASE 改；全部走临时数据，测完物理清理。"""
+地址可用环境变量 KB_TEST_BASE 改；全部走 __pretest__ 前缀的临时数据，退出前物理清理（中途异常也会清）。
+脚本要直连同一个数据库做清理，所以得在已配好数据库连接的项目目录里跑。"""
+import atexit
 import io
 import json
 import os
@@ -55,7 +57,11 @@ class Api:
         return self.req('DELETE', path, **kw)
 
 
-admin = Api(issue_token(1, 'admin', 'admin'))
+from backend.engine import q as _q0  # noqa: E402  清理要直连数据库；顺便取一个可用的管理员（首次部署时账号名是部署者自己定的）
+_adm = _q0("SELECT id, username FROM kb_user WHERE role='admin' AND status=1 ORDER BY id LIMIT 1", one=True) \
+    or {'id': 1, 'username': 'admin'}
+ADM_UID = int(_adm['id'])
+admin = Api(issue_token(ADM_UID, _adm['username'], 'admin'))
 STAFF_UID = None
 staff = Api()  # 稍后建临时用户再发 token
 guest = Api()
@@ -68,10 +74,22 @@ def j(r):
         return {'_raw': r.text[:200]}
 
 
+_CLEANED = []
+
+
 def cleanup():
+    """物理清掉全部 __pretest__ 数据。正常跑完调一次；中途异常时由 atexit 在退出前调。"""
+    if _CLEANED:
+        return
+    _CLEANED.append(1)
     print('--- cleanup ---')
     try:
         d = j(admin.get('/api/meta'))
+        _any = [t['id'] for t in d.get('tables', []) if t['name'].startswith(TAG)]
+        if _any:
+            # 审计是服务端后台批量写的：先让它把队列落盘，否则最后那批会在下面删完之后才进库，留下测试残留
+            admin.get(f'/api/tables/{_any[0]}/audit?limit=1')
+            time.sleep(0.6)
         tids = [t['id'] for t in d.get('tables', []) if t['name'].startswith(TAG)]
         for tid in tids:
             admin.delete(f'/api/tables/{tid}')
@@ -108,9 +126,13 @@ def cleanup():
         ex('DELETE FROM kb_user WHERE username LIKE %s', (TAG + '%',))
         ex('DELETE FROM kb_perm WHERE scope_key LIKE %s', (TAG + '%',))
         ex("DELETE FROM kb_perm WHERE user_id NOT IN (SELECT id FROM kb_user)")
+        ex('DELETE FROM kb_audit WHERE INSTR(CAST(detail AS CHAR), %s) > 0', (TAG,))   # 表已删掉的那些审计
         print('cleanup done')
     except Exception as e:
         print('cleanup error:', e)
+
+
+atexit.register(cleanup)
 
 
 # ==================== 1. 未登录 / 登录 ====================
@@ -231,7 +253,7 @@ r = mgr.post('/__auth/grants', {'uid': sub_row['id'], 'scope_type': 'project', '
 check('不能授超过自己的角色 403', r.status_code == 403, f'{r.status_code} {r.text[:80]}')
 r = mgr.post('/__auth/grants', {'uid': other_row['id'], 'scope_type': 'project', 'scope_key': PRJ, 'role': 'viewer'})
 check('不能给非自己新增账号授权 403', r.status_code == 403, f'{r.status_code} {r.text[:80]}')
-r = mgr.patch('/__auth/users/1', {'status': 0})
+r = mgr.patch(f'/__auth/users/{ADM_UID}', {'status': 0})
 check('不能操作管理员账号 403', r.status_code == 403, f'{r.status_code} {r.text[:80]}')
 r = mgr.patch(f"/__auth/users/{sub_row['id']}", {'role': 'staff'})
 check('不能改角色/下发能力 403', r.status_code == 403, f'{r.status_code} {r.text[:80]}')
