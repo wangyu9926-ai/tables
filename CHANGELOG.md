@@ -24,6 +24,17 @@
   一行失败不影响其它行；畸形的 `id` / `ver` 逐条报错，不再 500。
 - 上线前回归扩到 **363 项断言**：批量行、xlsx、服务端视图、写入幂等、图片配额、清理工具只统计模式。
 
+## 2026-11-26 · 前端拆分 + 后端模块化样板
+
+- **前端**：`index.html` 里 6800 行的内联脚本按功能拆成 `frontend/js/` 下 12 个文件（core / shell / dialogs /
+  sync-fields / grid-head / rows-live / cells / paste-panel / filters-tools / auth-menu / analysis / import-select），
+  加载顺序即执行顺序；`index.html` 只剩页面骨架和样式。脚本走 `/static/js/…`，`?v=` 由服务端按文件 mtime 自动加
+  （改 js 不用重启，浏览器也会重新拉）。
+- **后端**：`backend/modules/` 放 APIRouter 模块，「保存的视图」先迁过去做样板；老路由仍在 `app.py`（路径顺序互相咬合，
+  要逐个模块拆、每拆一个跑一轮回归）。
+- 内容安全策略：主页面没有内联脚本了，`script-src` 只剩 `'self'`；回归改为检查 12 个外部脚本都能取到、都带版本号。
+- 上线前回归 **365 项断言**。
+
 ## 2026-11-26 · 上线前加固
 
 - 长整数（订单号 / 商品 ID）按整数解析并以字符串返回，不丢精度。

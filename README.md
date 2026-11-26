@@ -19,9 +19,9 @@
 - 仅本机调试：`python run.py` 默认**拒绝启动**（它跳过登录网关，且是明文、免登录的）；确实要用必须显式设
   `KB_ALLOW_NOAUTH=1`，且它只绑 127.0.0.1，不要对外。
 
-- 后端：FastAPI（`backend/app.py` = API，`backend/engine.py` = 引擎层）
+- 后端：FastAPI（`backend/app.py` = 老路由与共享函数，`backend/modules/*.py` = 新功能模块，`backend/engine.py` = 引擎层）
 - 数据库：MySQL 5.7+/8.0（utf8mb4），连接配置在 `backend/db.py`，可用 `MUMA_DB_*` 环境变量覆盖；口令不写在代码里
-- 前端：`frontend/index.html`（纯静态，无构建）
+- 前端：`frontend/index.html`（页面骨架 + 样式）+ `frontend/js/*.js`（按功能拆分的 12 个脚本；纯静态、无构建）
 
 ## 全新部署（空库起步）
 
@@ -193,7 +193,7 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
 - **跨站写保护**：浏览器发出的写请求必须来自本站（优先看 `Sec-Fetch-Site`，老浏览器退回比较 `Origin` 与 `Host`）；
   请求体只解析 `application/json`（文本/表单类的跨源请求不需要预检就能发出去，一律不认）。
 - **请求体上限** 25MB（`GATE_MAX_BODY_MB`）；超出的导入直接拒绝。
-- **内容安全策略（CSP）**：不放开 `unsafe-inline`。页面里每段内联脚本按 sha256 放行，页面里多出任何脚本都不会执行。
+- **内容安全策略（CSP）**：不放开脚本的 `unsafe-inline`。登录页 / 用户管理页的内联脚本按 sha256 放行；主页面脚本全是同源外部文件（`script-src 'self'`）。页面里多出任何脚本都不会执行。
   - ⚠️ **按钮事件必须写在脚本里**（`addEventListener` / `el.onclick = fn`），**不能写 `onclick="..."` 这种标签属性** ——
     那种写法会被策略拦掉，表现是「按钮点了没反应、页面也不报错」。回归里有专门用例检查三个页面。
   - 万一改出问题，`KB_CSP_UNSAFE_INLINE=1` 一键退回旧行为；引擎里也有兜底：检测到标签内联事件/`javascript:` 链接时，
@@ -528,11 +528,49 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
 - **演练**：上线前做过一次真恢复（把生产备份恢复到临时库，逐项核对：17 张表、323 列、5950 行、4 个账号、
   3 条汇总规则、538 条镜像链接、510 条审计，表格1 655 行——与生产一致）。建议每季度自己演练一次，别等真出事。
 
+## 代码结构与开发约定
+
+```
+backend/
+  app.py            老路由 + 共享函数/缓存（路径顺序在这里，别乱挪）
+  modules/          新功能按模块放：一个文件一个 APIRouter
+    views.py        样板：保存的视图（个人 / 团队）
+  engine.py         建表、CRUD、公式引擎、CSP
+  sync.py           汇总同步队列
+  changes.py        变更日志 + SSE
+  db.py             连接池 / 配置
+frontend/
+  index.html        页面骨架 + 样式
+  js/core.js        工具函数（$ / esc / toast / busy / 标签颜色）
+  js/shell.js       项目 → 表 → Sheet 三层导航、侧栏、页签
+  js/dialogs.js     通用弹窗、新建项目 / 表格、写入密钥
+  js/sync-fields.js 汇总同步 UI、字段管理
+  js/grid-head.js   列宽、表头、常用视图（含团队视图）
+  js/rows-live.js   行渲染、分页、实时刷新（SSE + 轮询）、插入行
+  js/cells.js       选中 / 区域选择 / 填充柄 / 单元格编辑 / 撤销
+  js/paste-panel.js 粘贴、批注、行详情侧栏
+  js/filters-tools.js 筛选、高级筛选、变动历史、导出、拖动排序
+  js/auth-menu.js   登录态、用户管理、右键菜单、拖动行
+  js/analysis.js    数据分析（图表 / 看板）
+  js/import-select.js Excel 导入、自定义下拉、日期选择器、手机端、startApp
+tools/               备份 / 软删清理
+```
+
+- **加后端功能**：新建 `backend/modules/xxx.py`（里面一个 `router = APIRouter()`，请求体也放这个文件），
+  在 `backend/app.py` 里 `app.include_router(xxx.router)`，**放在原来写这些路由的位置** ——
+  FastAPI 按注册顺序匹配路径（例如 `/api/tables/{tid}/rows/bulk` 必须排在 `/rows/{rid}` 前面，否则会被当成 rid）。
+  公共函数用 `_a()` 延迟导入（见 `modules/views.py`），避免模块级 `from backend.app import ...` 的循环导入。
+- **加前端功能**：放进对应的 `frontend/js/*.js`。函数都是全局的，跨文件可直接调用；新领域就新增一个文件，
+  在 `index.html` 底部按依赖顺序加一行 `<script src="/static/js/xxx.js"></script>`（`?v=` 由服务端自动加）。
+  **不要再往 `index.html` 里写内联脚本**：内容安全策略只放行同源文件 + 带哈希的内联块。
+- **只改前端不用重启后端**：服务端按 js 文件 mtime 自动换 `?v=`，浏览器会重新拉脚本；只有改后端代码才需要重启。
+- **老路由暂时不拆**：它们共用模块级缓存、路径顺序互相咬合，要拆得一个模块一轮回归，不跟功能改动混在一起。
+
 ## 上线前回归
 
 - `python prelaunch_test.py`（需服务已启动；默认打 `https://127.0.0.1:8614`，自签证书自动忽略校验，换地址用环境变量 `KB_TEST_BASE`）。
   要在**已配好数据库连接**的项目目录里跑：脚本会直连同一个数据库做清理，管理员账号从库里取（首次部署时账号名是部署者自己定的）。
-- **363 项断言**，全部走 `__pretest__` 前缀的临时数据，退出前物理清理（中途异常也会清）。
+- **365 项断言**，全部走 `__pretest__` 前缀的临时数据，退出前物理清理（中途异常也会清）。
 - 覆盖范围：
   - 登录与入口：未登录一律 401、登录页与各页面的安全头、跨站写保护、请求体类型、登录失败锁定（换 IP 猜同一账号也会被锁）、
     `python run.py` 默认拒绝启动且不留下监听端口
@@ -543,7 +581,7 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
   - 权限：viewer / editor / admin 权限矩阵、字段与账号能力下发及越权拦截、授权随项目改名 / 删除同步
   - 集成：HTTP 写入密钥、汇总同步（子表 → 总表、多子表汇入、重复全量不重复）、
     双向同步（总表改镜像行回写子表、总表新增不同步、总表删镜像行子表一起软删）、变更通知（轮询接口、SSE 握手、按 ID 取行）
-  - 内容安全策略：三个页面每段内联脚本的哈希都在策略里、不含 `unsafe-inline`、标签上没有内联事件
+  - 内容安全策略：内联脚本的哈希都在策略里、脚本策略不含 `unsafe-inline`、标签上没有内联事件；主页面 12 个外部脚本都带版本号且都能取到（少一个文件会白屏，接口测试不看就发现不了）
   - **畸形输入**：筛选条件、各类名称长度、列定义、导入配置、`NaN` / `Infinity`、登录与账号接口里类型不对 / 超长 / 越界的输入，
     只能得到明确的 4xx，不能 500，也不能留下空壳表或多余账号；批量行里畸形的 `id` / `ver` 逐条报错不影响其它行
 

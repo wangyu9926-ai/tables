@@ -445,7 +445,8 @@ def setting_set(k, v):
 
 
 # ---------------- 内容安全策略（CSP） ----------------
-# 网页是一个带内联脚本的单文件。与其放行所有内联脚本（'unsafe-inline' 等于没有 XSS 防线），
+# 页面脚本要么是同源外部文件（/static/js/*.js，主页面），要么是带哈希的内联块（登录页 / 用户管理页）。
+# 与其放行所有内联脚本（'unsafe-inline' 等于没有 XSS 防线），
 # 不如把页面里每个 <script> 块的 sha256 算出来放进策略：页面里多出任何一段脚本都不会被执行。
 # 样式（style-src）暂时保留 'unsafe-inline'：界面大量使用内联 style，它不能执行脚本。
 # 万一策略把页面拦住了，设环境变量 KB_CSP_UNSAFE_INLINE=1 可一键退回旧行为。
@@ -488,9 +489,10 @@ def csp_for_html(html=None):
         return _CSP_BASE % ''
     hashes = csp_inline_hashes(html)
     text = html if isinstance(html, str) else html.decode('utf-8', 'replace')
-    if not hashes and '<script' in text:
-        # 页面里有脚本却一段都没识别出来：宁可退回旧行为，也不能把页面拦成白屏
-        why = '页面里有脚本但没识别出内联脚本块'
+    if not hashes and _SCRIPT_RE.search(text):
+        # 页面里有内联脚本却一段都没识别出来：宁可退回旧行为，也不能把页面拦成白屏
+        # （只有 <script src=...> 外部脚本的页面不算：'self' 已经放行，不要因此放宽策略）
+        why = '页面里有内联脚本但没识别出脚本块'
     else:
         # 按钮的事件要写在脚本里（addEventListener / .onclick = ...）。哪天有人又写成 onclick="..."，
         # 与其让按钮在用户手里点了没反应，不如这个页面退回旧行为，并在日志里喊出来。

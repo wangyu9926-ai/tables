@@ -868,12 +868,14 @@ import hashlib as _hl
 import re as _re
 
 
-def csp_page(resp, name):
-    """内容安全策略是“只放行带哈希的脚本”。三件事同时成立，页面才既安全又能用：
+def csp_page(resp, name, client=None):
+    """内容安全策略是“只放行带哈希的内联脚本 + 同源脚本”。几件事同时成立，页面才既安全又能用：
     ① 页面里每段内联脚本的哈希都在策略里（这里自己重算，不复用被测的代码）；
     ② 脚本这一项没有 unsafe-inline；
     ③ 标签上没有内联事件。③ 只靠接口测试查不出来 —— 真浏览器里那种写法会被策略拦掉，
-       表现是按钮点了没反应、页面不报错（上线前实测就是在登录按钮上发现的）。"""
+       表现是按钮点了没反应、页面不报错（上线前实测就是在登录按钮上发现的）；
+    ④ 主页面 2026-11-26 拆成 /static/js/*.js：这些外部脚本必须都取得到、都带版本号，
+       否则页面白屏（少一个文件这种事，接口测试不看就发现不了）。"""
     html = resp.text
     csp = resp.headers.get('content-security-policy', '')
     want = set()
@@ -882,8 +884,23 @@ def csp_page(resp, name):
         want.add("'sha256-" + _b64.b64encode(_hl.sha256(code).digest()).decode() + "'")
     sdir = csp.split('script-src', 1)[1].split(';', 1)[0] if 'script-src' in csp else ''
     have = set(_re.findall(r"'sha256-[A-Za-z0-9+/=]+'", sdir))
-    check(f'{name}：每段内联脚本的哈希都在策略里', bool(want) and want <= have,
-          f'页面 {len(want)} 段脚本 / 策略 {len(have)} 个哈希: {sorted(want - have)[:1]}')
+    srcs = _re.findall(r'<script[^>]*\bsrc="([^"]+)"[^>]*>\s*</script>', html, _re.I)
+    if want:
+        check(f'{name}：每段内联脚本的哈希都在策略里', want <= have,
+              f'页面 {len(want)} 段脚本 / 策略 {len(have)} 个哈希: {sorted(want - have)[:1]}')
+    else:
+        check(f'{name}：没有内联脚本，脚本只放行同源（外部文件）',
+              bool(srcs) and "'self'" in sdir and "'unsafe-inline'" not in sdir,
+              f'src={len(srcs)} 策略={sdir[:90]}')
+    if srcs:
+        check(f'{name}：外部脚本都带版本号（改了 js 浏览器会重新拉）',
+              all('?v=' in x for x in srcs), str(srcs[:3])[:160])
+        bad_src = []
+        for x in srcs:
+            rr = client.get(x) if client else None
+            if rr is None or rr.status_code != 200 or 'javascript' not in (rr.headers.get('content-type') or ''):
+                bad_src.append((x, None if rr is None else rr.status_code))
+        check(f'{name}：{len(srcs)} 个外部脚本都能取到', not bad_src, str(bad_src)[:160])
     check(f'{name}：脚本策略不再放行任意内联脚本', bool(sdir) and "'unsafe-inline'" not in sdir, sdir[:120])
     body = _re.sub(r'<script.*?</script>', '', html, flags=_re.S | _re.I)
     bad = _re.findall(r'<[a-z][^>]*\son[a-z]+\s*=|\shref\s*=\s*["\']?\s*javascript\s*:', body, _re.I)
@@ -894,7 +911,7 @@ def csp_page(resp, name):
 
 csp_page(guest.get('/login'), '登录页')
 csp_page(admin.get('/__auth/admin'), '用户管理页')
-csp_page(admin.get('/'), '主页面')
+csp_page(admin.get('/'), '主页面', admin)
 
 # 免登录的开发入口必须拒绝启动：run.py 是明文 + 免登录，谁双击旧脚本都能直接读写数据（2026-11-26 踩过）
 import subprocess as _sp
