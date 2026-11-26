@@ -47,6 +47,35 @@ app = FastAPI(title="牧马人线上多维表")
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 init_schema()
 
+
+@app.exception_handler(pymysql.err.DataError)
+async def _db_input_out_of_range(request, exc):
+    """文本超过列宽、数值超出列的范围（1406 / 1264 / 1366）：是调用方传错了内容，
+    回 400 并说清楚；不该表现成服务器故障 500。各接口自己能提前判断的仍然提前给准确的提示，这里是兜底。"""
+    code = exc.args[0] if exc.args else ''
+    print(f'[db] 输入超出允许范围（{code}）', flush=True)
+    return JSONResponse({'detail': '内容过长或数值超出允许范围，请缩短后再试'}, status_code=400)
+
+
+def _check_len(value, limit, what):
+    """文本长度按数据库列宽先校验（VARCHAR 按字符数计）。"""
+    if value is not None and len(value) > limit:
+        raise HTTPException(400, f'{what}不能超过 {limit} 个字')
+
+
+def _col_width(w, default=0):
+    """列宽在库里是 SMALLINT：负数、超过 32767、非数字都按默认值处理。"""
+    try:
+        w = int(w)
+    except Exception:
+        return default
+    return w if 0 <= w <= 32767 else default
+
+
+def _as_ints(items):
+    """请求体里的列表只要其中的整数（列 id / 表 id）；别的元素一律丢弃，不能带进 SQL。"""
+    return [int(x) for x in (items or []) if isinstance(x, int) and not isinstance(x, bool)]
+
 # 元信息（表/列/关联）在内存缓存：远程库任何一次查询都是 100ms 级 RTT，
 # 首屏不该反复付这个成本。写操作按影响范围失效，不再一改单元格就全表重建。
 _META = {'data': None}
@@ -626,7 +655,11 @@ class SheetOrderReq(BaseModel):
 def sort_groups(req: GroupOrderReq):
     """侧栏表（组）拖拽排序：按给定顺序重排组，并保持组内 Sheet 原有顺序。"""
     _need_admin()
+    if not isinstance(req.groups, list):
+        raise HTTPException(400, 'groups 必须是数组')
     for gi, gname in enumerate(req.groups):
+        if not isinstance(gname, str):
+            continue                             # 组名只可能是文本
         sql = "SELECT id FROM kb_table WHERE group_name=%s AND deleted=0"
         args = [gname]
         if req.project:
@@ -641,14 +674,17 @@ def sort_groups(req: GroupOrderReq):
 @app.post("/api/groups/{group}/sort")
 def sort_sheets(group: str, req: SheetOrderReq):
     """Sheet 页签拖拽排序：只改本组内顺序，组在侧栏的位置不变。"""
-    if not req.tids:
+    if not isinstance(req.tids, list):
+        raise HTTPException(400, 'tids 必须是数组')
+    tids = _as_ints(req.tids)
+    if not tids:
         return {'ok': True}
-    first = q("SELECT project FROM kb_table WHERE id=%s AND deleted=0", (req.tids[0],), one=True)
+    first = q("SELECT project FROM kb_table WHERE id=%s AND deleted=0", (tids[0],), one=True)
     need_project((first or {}).get('project') or '', write=True)
     row = q("SELECT COALESCE(MIN(sort),0) b FROM kb_table WHERE group_name=%s AND deleted=0",
             (group,), one=True)
     base = (int(row['b'] or 0) // 1000) * 1000
-    for i, tid in enumerate(req.tids):
+    for i, tid in enumerate(tids):
         ex("UPDATE kb_table SET sort=%s WHERE id=%s AND group_name=%s", (base + i, tid, group))
     return {'ok': True}
 
@@ -735,16 +771,60 @@ class TableReq(BaseModel):
     columns: list | None = None     # [{key?,label,type?,options?,expr?,required?,width?}]
 
 
+def _jdump_col(v):
+    """列定义里的 options / option_colors 要存进 JSON 列：NaN / Infinity 不是合法 JSON，数据库会拒收，先在这里拦下。"""
+    if v is None:
+        return None
+    try:
+        return json.dumps(v, ensure_ascii=False, allow_nan=False)
+    except ValueError:
+        raise HTTPException(400, '列定义里有无效的数值（NaN / Infinity）')
+
+
 @app.post("/api/tables")
 def create_table(req: TableReq):
     _need_admin()
     name = (req.name or '').strip()
     if not name:
         raise HTTPException(400, '表名不能为空')
+    _check_len(name, 160, '表名')
+    _check_len(req.note, 500, '表备注')
+    _check_len(req.project, 160, '项目名')
+    _check_len(req.group_name, 80, '分组名')
+    _check_len(req.icon, 16, '图标')
     if req.project and not _project_exists(req.project):
         raise HTTPException(404, '项目不存在')
     if q("SELECT id FROM kb_table WHERE name=%s AND deleted=0", (name,), one=True):
         raise HTTPException(409, f'表「{name}」已存在')
+    defs = req.columns or [{'label': '名称', 'type': 'text', 'required': True},
+                           {'label': '备注', 'type': 'text'}]
+    # 列定义先全部校验完再建表：以前是边建表边校验，列定义出错时表已经建出来了，留下没有列的空壳表
+    for c in defs:
+        if not isinstance(c, dict):
+            raise HTTPException(400, '列定义格式不对：每一列都必须是对象')
+    labels = [{'key': slug(c.get('key') or c.get('label') or ''),
+               'label': str(c.get('label') or '')} for c in defs]
+    cols_out = []
+    used = set()
+    for i, c in enumerate(defs):
+        label = str(c.get('label') or '').strip()
+        if not label:
+            continue
+        _check_len(label, 200, '列名')
+        key = slug(c.get('key') or label)
+        while key in used:
+            key += '_'
+        used.add(key)
+        t = c.get('type') or 'text'
+        if t not in COL_TYPES:
+            raise HTTPException(400, f'未知列类型 {t}')
+        expr = c.get('expr') if t == 'formula' else None
+        if t == 'formula':
+            ok, msg = validate_expr(expr, labels, req.project or '')
+            if not ok:
+                raise HTTPException(400, f'公式列「{label}」：{msg}')
+        cols_out.append((key, label, t, _jdump_col(c.get('options')), _jdump_col(c.get('option_colors')), expr,
+                         _col_width(c.get('width')), i, 1 if c.get('required') else 0, 1 if c.get('hidden') else 0))
     # 软删的同名表仍占着 UNIQUE(name)，彻底清掉它的残留，避免 1062
     old = q("SELECT id FROM kb_table WHERE name=%s AND deleted=1", (name,), one=True)
     if old:
@@ -758,30 +838,10 @@ def create_table(req: TableReq):
     except pymysql.err.IntegrityError:
         raise HTTPException(409, f'表「{name}」已存在')
     audit(tid, None, 'create_table', {'name': name})
-    defs = req.columns or [{'label': '名称', 'type': 'text', 'required': True},
-                           {'label': '备注', 'type': 'text'}]
-    used = set()
-    for i, c in enumerate(defs):
-        label = (c.get('label') or '').strip()
-        if not label:
-            continue
-        key = slug(c.get('key') or label)
-        while key in used:
-            key += '_'
-        used.add(key)
-        t = c.get('type') or 'text'
-        if t not in COL_TYPES:
-            raise HTTPException(400, f'未知列类型 {t}')
-        expr = c.get('expr') if t == 'formula' else None
-        if t == 'formula':
-            ok, msg = validate_expr(expr, [{'key': slug(x.get('key') or x.get('label') or ''),
-                                            'label': x.get('label') or ''} for x in defs], req.project or '')
-            if not ok:
-                raise HTTPException(400, f'公式列「{label}」：{msg}')
+    for key, label, t, options, colors, expr, width, i, required, hidden in cols_out:
         ex("INSERT INTO kb_column(table_id,`key`,label,type,options,option_colors,expr,width,sort,required,hidden) "
            "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-           (tid, key, label, t, jdump(c.get('options')), jdump(c.get('option_colors')), expr,
-            c.get('width') or 0, i, 1 if c.get('required') else 0, 1 if c.get('hidden') else 0))
+           (tid, key, label, t, options, colors, expr, width, i, required, hidden))
         audit(tid, None, 'create_column', {'label': label, 'type': t})
     return {'ok': True, 'id': tid, 'name': name}
 
@@ -792,18 +852,29 @@ def update_table(tid: int, req: TableReq):
     _need(tid)
     sets, args = [], []
     if req.name and req.name.strip():
-        sets.append('name=%s'); args.append(req.name.strip())
+        new = req.name.strip()
+        _check_len(new, 160, '表名')
+        if q("SELECT id FROM kb_table WHERE name=%s AND deleted=0 AND id<>%s", (new, tid), one=True):
+            raise HTTPException(409, f'表「{new}」已存在')
+        sets.append('name=%s'); args.append(new)
     if req.note is not None:
+        _check_len(req.note, 500, '表备注')
         sets.append('note=%s'); args.append(req.note)
     if req.project:
+        _check_len(req.project, 160, '项目名')
         sets.append('project=%s'); args.append(req.project)
     if req.group_name:
+        _check_len(req.group_name, 80, '分组名')
         sets.append('group_name=%s'); args.append(req.group_name)
     if req.icon:
+        _check_len(req.icon, 16, '图标')
         sets.append('icon=%s'); args.append(req.icon)
     if sets:
         args.append(tid)
-        ex(f"UPDATE kb_table SET {','.join(sets)} WHERE id=%s", tuple(args))
+        try:
+            ex(f"UPDATE kb_table SET {','.join(sets)} WHERE id=%s", tuple(args))
+        except pymysql.err.IntegrityError:
+            raise HTTPException(409, '表名已被占用')
         audit(tid, None, 'update_table', {'name': req.name})
     return {'ok': True}
 
@@ -837,6 +908,7 @@ def rename_table(tid: int, req: RenameReq):
         raise HTTPException(400, '名称不能为空')
     group = t['group_name'] or ''
     full = (group + '·' + short) if group else short
+    _check_len(full, 160, '表名')
     dup = q("SELECT id FROM kb_table WHERE name=%s AND deleted=0 AND id<>%s", (full, tid), one=True)
     if dup:
         raise HTTPException(409, f'同组下已有「{short}」')
@@ -878,6 +950,8 @@ def create_project(req: ProjectReq):
     name = (req.name or '').strip()
     if not name:
         raise HTTPException(400, '项目名不能为空')
+    _check_len(name, 160, '项目名')
+    _check_len(req.icon, 16, '图标')
     dup = q("SELECT id FROM kb_project WHERE name=%s AND deleted=0", (name,), one=True)
     if dup:
         raise HTTPException(409, '项目已存在')
@@ -902,6 +976,7 @@ def rename_project(name: str, req: ProjectReq):
     new = (req.name or '').strip()
     if not new:
         raise HTTPException(400, '项目名不能为空')
+    _check_len(new, 160, '项目名')
     if new != name:
         dup = q("SELECT id FROM kb_project WHERE name=%s AND deleted=0", (new,), one=True)
         if dup:
@@ -981,6 +1056,7 @@ def add_column(tid: int, req: ColumnReq):
     label = (req.label or '').strip()
     if not label:
         raise HTTPException(400, '列名不能为空')
+    _check_len(label, 200, '列名')
     t = req.type or 'text'
     if t not in COL_TYPES:
         raise HTTPException(400, f'未知列类型 {t}')
@@ -999,11 +1075,13 @@ def add_column(tid: int, req: ColumnReq):
     keys = {r['key'] for r in q("SELECT `key` FROM kb_column WHERE table_id=%s", (tid,))}
     while key in keys:
         key = f'{base}_{n}'; n += 1
-    sort = req.sort if req.sort is not None else (
-        q("SELECT COALESCE(MAX(sort),0) m FROM kb_column WHERE table_id=%s", (tid,), one=True)['m'] + 1)
+    if req.sort is None:
+        sort = q("SELECT COALESCE(MAX(sort),0) m FROM kb_column WHERE table_id=%s", (tid,), one=True)['m'] + 1
+    else:
+        sort = max(0, min(int(req.sort), 2147483647))
     cid = ex("INSERT INTO kb_column(table_id,`key`,label,type,options,option_colors,expr,width,sort,required,hidden) "
              "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-             (tid, key, label, t, jdump(req.options), jdump(req.option_colors), expr, req.width or 0,
+             (tid, key, label, t, _jdump_col(req.options), _jdump_col(req.option_colors), expr, _col_width(req.width),
               sort, 1 if req.required else 0, 1 if req.hidden else 0))
     audit(tid, None, 'create_column', {'label': label, 'type': t, 'expr': expr})
     return {'ok': True, 'id': cid, 'key': key}
@@ -1018,6 +1096,7 @@ def update_column(tid: int, cid: int, req: ColumnReq):
         raise HTTPException(404, '列不存在')
     sets, args, detail = [], [], {}
     if req.label and req.label.strip() != col['label']:
+        _check_len(req.label.strip(), 200, '列名')
         sets.append('label=%s'); args.append(req.label.strip())
         detail['label'] = {'old': col['label'], 'new': req.label.strip()}
     if req.type and req.type != col['type']:
@@ -1026,9 +1105,9 @@ def update_column(tid: int, cid: int, req: ColumnReq):
         sets.append('type=%s'); args.append(req.type)
         detail['type'] = {'old': col['type'], 'new': req.type}
     if req.options is not None:
-        sets.append('options=%s'); args.append(jdump(req.options))
+        sets.append('options=%s'); args.append(_jdump_col(req.options))
     if req.option_colors is not None:
-        sets.append('option_colors=%s'); args.append(jdump(req.option_colors))
+        sets.append('option_colors=%s'); args.append(_jdump_col(req.option_colors))
     if req.type == 'formula' or col['type'] == 'formula':
         expr = req.expr if req.expr is not None else col['expr']
         known = [{'key': c['key'], 'label': c['label']}
@@ -1040,9 +1119,9 @@ def update_column(tid: int, cid: int, req: ColumnReq):
         sets.append('expr=%s'); args.append(expr)
         detail['expr'] = {'old': col['expr'], 'new': expr}
     if req.width is not None:
-        sets.append('width=%s'); args.append(req.width)
+        sets.append('width=%s'); args.append(_col_width(req.width))
     if req.sort is not None:
-        sets.append('sort=%s'); args.append(req.sort)
+        sets.append('sort=%s'); args.append(max(0, min(int(req.sort), 2147483647)))
     if req.required is not None:
         sets.append('required=%s'); args.append(1 if req.required else 0)
     if req.hidden is not None:
@@ -1085,11 +1164,12 @@ class SortColsReq(BaseModel):
 def sort_columns(tid: int, req: SortColsReq):
     _need_fields(tid)
     _need(tid)
-    hid = set(req.hidden or [])
-    for i, cid in enumerate(req.order):
+    order = _as_ints(req.order)
+    hid = set(_as_ints(req.hidden))
+    for i, cid in enumerate(order):
         ex("UPDATE kb_column SET sort=%s,hidden=%s WHERE id=%s AND table_id=%s",
            (i, 1 if cid in hid else 0, cid, tid))
-    audit(tid, None, 'sort_columns', {'order': req.order, 'hidden': list(hid)})
+    audit(tid, None, 'sort_columns', {'order': order, 'hidden': list(hid)})
     return {'ok': True}
 
 
@@ -1152,14 +1232,18 @@ def list_rows(tid: int, page: int = 1, size: int = 50, q: str = '',
             multi = json.loads(filters)
         except Exception:
             multi = {}
+        # 只认 {列: 条件} 或 {logic, conds} 两种对象；数组 / 字符串 / 数字按“没有筛选”处理（和非法 JSON 同一口径）
+        if not isinstance(multi, dict):
+            multi = {}
 
     bykey = {c['key']: c for c in cols}
     formula_keys = {c['key'] for c in cols if c['type'] == 'formula'}
 
     def _uses_formula(flt):
         if isinstance(flt.get('conds'), list):
-            return any(c.get('key') in formula_keys for c in flt['conds'] if isinstance(c, dict))
-        return any(k in formula_keys for k in flt)
+            return any(isinstance(c.get('key'), str) and c['key'] in formula_keys
+                       for c in flt['conds'] if isinstance(c, dict))
+        return any(isinstance(k, str) and k in formula_keys for k in flt)
 
     if multi and _uses_formula(multi):
         # 公式列参与筛选时先全量算公式；复制行，不能污染共享的视图缓存
@@ -1215,12 +1299,14 @@ def list_rows(tid: int, page: int = 1, size: int = 50, q: str = '',
                         return True
                     return {'gt': a > b, 'lt': a < b, 'gte': a >= b, 'lte': a <= b}[op]
                 return True
-            # 日期范围
+            # 日期范围：起止一律按文本比较；传进来数字 / 对象时先转成文本，不能让比较本身报错
             if v is None or str(v).strip() == '':
                 return False
             s = str(v).strip()[:10]
-            f, to = spec.get('from') or '', spec.get('to') or ''
+            f, to = str(spec.get('from') or ''), str(spec.get('to') or '')
             return (not f or s >= f) and (not to or s <= to)
+        if not isinstance(spec, (str, list, tuple)):
+            return True                             # 数字 / 布尔不是合法的筛选条件：这一项不筛
         if ctype == 'multiselect' or isinstance(v, (list, tuple)):
             arr = list(v) if isinstance(v, (list, tuple)) else ([v] if v not in (None, '') else [])
             if '（空）' in spec and not arr:
@@ -1242,9 +1328,9 @@ def list_rows(tid: int, page: int = 1, size: int = 50, q: str = '',
                 if not isinstance(c, dict):
                     continue
                 key = c.get('key')
-                if key not in bykey:
-                    continue                    # 列已经被删掉：忽略这条，不能把整表筛成空
-                op = c.get('op')
+                if not isinstance(key, str) or key not in bykey:
+                    continue                    # 列已经被删掉（或 key 不是文本）：忽略这条，不能把整表筛成空
+                op = c.get('op') if isinstance(c.get('op'), str) else None
                 if op == 'daterange':
                     spec = {'from': c.get('value') or '', 'to': c.get('value2') or ''}
                 elif op:
@@ -1307,8 +1393,12 @@ def rows_by_ids(tid: int, ids: str = ''):
     want = []
     for x in (ids or '').split(','):
         x = x.strip()
-        if x.isdigit():
-            want.append(int(x))
+        try:
+            # 只收普通十进制数字：'²' 这类字符 isdigit() 也为真，却转不成整数
+            if x and x.isascii() and x.isdigit():
+                want.append(min(int(x), 18446744073709551615))
+        except ValueError:
+            pass
     want = want[:200]
     if not want:
         return _json_response({'rows': []})
@@ -1715,6 +1805,7 @@ def history(tid: int, limit: int = 100):
     t = _need(tid)
     need_table(tid, t.get('project') or '')
     flush_audit()          # 审计是后台批量写，读历史前先落盘
+    limit = max(0, min(int(limit), 1000))      # 负数 / 超大值会被数据库当成语法或范围错误
     rows = q("SELECT id,row_id,action,actor,detail,"
              "DATE_FORMAT(at,'%%Y-%%m-%%d %%H:%%i:%%s') AS at "
              "FROM kb_audit WHERE table_id=%s ORDER BY id DESC LIMIT %s", (tid, limit))
@@ -2439,17 +2530,30 @@ async def import_commit(file: UploadFile = File(...), config: str = Form(...)):
     return await run_in_threadpool(_imp_commit_sync, raw, filename, cfg)
 
 
+def _imp_int(v, default=None):
+    """导入配置里的数字字段（请求体里的 JSON 字符串，没有任何类型约束）。"""
+    try:
+        return int(float(v))
+    except (TypeError, ValueError, OverflowError):
+        if default is not None:
+            return default
+        raise HTTPException(400, '导入配置里的数字不合法')
+
+
 def _imp_commit_sync(raw, filename, cfg):
-    header_row = int(cfg.get('header_row') or 1)
+    header_row = _imp_int(cfg.get('header_row'), 1)
     sheets, sel, headers, rows = _imp_load(raw, filename, cfg.get('sheet') or '', header_row)
     target = cfg.get('target') or 'table'
 
     if target == 'new':
-        project = (cfg.get('project') or '').strip()
-        name = (cfg.get('name') or '').strip()
-        group = (cfg.get('group_name') or '').strip()
+        project = str(cfg.get('project') or '').strip()
+        name = str(cfg.get('name') or '').strip()
+        group = str(cfg.get('group_name') or '').strip()
         if not project or not name:
             raise HTTPException(400, '新建表需要项目名和表名')
+        _check_len(name, 160, '表名')
+        _check_len(project, 160, '项目名')
+        _check_len(group, 160, '分组名')
         need_project(project, write=True)
         if q("SELECT id FROM kb_table WHERE name=%s AND deleted=0", (name,), one=True):
             raise HTTPException(409, f'表「{name}」已存在')
@@ -2477,8 +2581,11 @@ def _imp_commit_sync(raw, filename, cfg):
             typ = d.get('type') or 'text'
             if typ not in COL_TYPES or typ in ('formula', 'image'):
                 typ = 'text'
-            label = (d.get('label') or headers[src]).strip() or headers[src]
+            label = str(d.get('label') or headers[src] or '').strip() or str(headers[src])
+            _check_len(label, 200, '列名')
             opts = d.get('options')
+            if not isinstance(opts, list):
+                opts = None
             if typ == 'multiselect' and not opts:
                 opts = _imp_multi_options([r[src] for r in rows])
             if typ == 'select' and not opts:
@@ -2490,7 +2597,7 @@ def _imp_commit_sync(raw, filename, cfg):
             raise HTTPException(400, '没有可导入的列')
         mx = q("SELECT COALESCE(MAX(sort),0) AS m FROM kb_table", one=True)['m']
         tid = ex("INSERT INTO kb_table(name,note,project,group_name,icon,sort) VALUES(%s,%s,%s,%s,%s,%s)",
-                 (name, f'导入：{filename}', project, group or '', '📄', int(mx) + 1))
+                 (name, f'导入：{filename}'[:500], project, group, '📄', int(mx) + 1))
         used_keys = set()
         by_key = {}
         for i, c in enumerate(cols):
@@ -2501,7 +2608,7 @@ def _imp_commit_sync(raw, filename, cfg):
                 n += 1
             used_keys.add(key)
             ex("INSERT INTO kb_column(table_id,`key`,label,type,options,sort) VALUES(%s,%s,%s,%s,%s,%s)",
-               (tid, key, c['label'], c['type'], jdump(c.get('options')), i))
+               (tid, key, c['label'], c['type'], _jdump_col(c.get('options')), i))
             c['key'] = key
             by_key[key] = {'key': key, 'label': c['label'], 'type': c['type'],
                            'options': c.get('options')}
@@ -2530,7 +2637,7 @@ def _imp_commit_sync(raw, filename, cfg):
         return {'ok': True, 'table_id': tid, 'name': name, 'inserted': len(out_rows),
                 'skipped': len(rows) - len(out_rows), 'columns': len(cols)}
 
-    tid = int(cfg.get('table_id') or 0)
+    tid = _imp_int(cfg.get('table_id'), 0)
     if not tid:
         raise HTTPException(400, '缺少目标表')
     t = _need(tid)

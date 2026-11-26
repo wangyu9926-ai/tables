@@ -399,7 +399,7 @@ atexit.register(lambda: flush_audit(3.0))
 
 
 def slug(s):
-    s = (s or '').strip()
+    s = (str(s) if s is not None else '').strip()      # 请求体里的 key 可能是数字 / 对象：先当文本处理
     s = re.sub(r"[\s'\"`\\/]+", '_', s)
     return s[:120] or 'col'
 
@@ -1181,6 +1181,8 @@ def compute_formulas(row, cols, project=None):
 def validate_expr(expr, cols, project=None, xt_check=None):
     """建/改公式列时校验：引用列存在、跨表函数参数合法、语法可解析。
     xt_check(table_id) -> bool：给非管理员作者用的，跨表函数引用的每一张表都要通过它。"""
+    if not isinstance(expr, str):
+        return False, '公式必须是文本'
     if not expr or not expr.strip():
         return False, '公式不能为空'
     if len(expr) > _EXPR_MAX:

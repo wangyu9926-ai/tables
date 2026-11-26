@@ -816,7 +816,10 @@ def _gate(request):
 
     if path == '/__auth/login' and method == 'POST':
         d = request.state.gate_body
-        return _login_result(ip, (d.get('username') or '').strip(), d.get('password') or '')
+        # 不用登录就能打的接口：账号 / 密码什么类型都可能传进来，不是文本一律当空值处理
+        u, pw = d.get('username'), d.get('password')
+        u = u.strip()[:64] if isinstance(u, str) else ''
+        return _login_result(ip, u, pw if isinstance(pw, str) else '')
 
     if path == '/__auth/logout':
         return _resp_json({'ok': True}, clear_cookie=True)
@@ -852,8 +855,12 @@ def _gate(request):
         if not _can_users(user):
             return _resp_json({'detail': '需要账号管理权限'}, 403)
         d = request.state.gate_body
-        u = (d.get('username') or '').strip()
-        pw = d.get('password') or ''
+        u, pw = d.get('username'), d.get('password')
+        if not isinstance(u, str) or not isinstance(pw, str):
+            return _resp_json({'detail': '账号和密码必须是文本'}, 400)
+        u = u.strip()
+        real = d.get('real_name')
+        real = real.strip()[:64] if isinstance(real, str) else ''
         if not re.fullmatch(r'[A-Za-z0-9_.-]{2,32}', u):
             return _resp_json({'detail': '账号需 2~32 位字母/数字/_.-'}, 400)
         if len(pw) < 6:
@@ -868,7 +875,7 @@ def _gate(request):
         cu = 1 if (is_admin and d.get('can_users')) else 0
         new_id = ex("INSERT INTO kb_user(username,password_hash,real_name,role,status,can_fields,can_users,created_by) "
                     "VALUES(%s,%s,%s,%s,1,%s,%s,%s)",
-                    (u, hash_password(pw), (d.get('real_name') or '').strip()[:64], role, cf, cu, user['username']))
+                    (u, hash_password(pw), real, role, cf, cu, user['username']))
         clear_account_cache()
         return _resp_json({'ok': True})
 
@@ -891,25 +898,29 @@ def _gate(request):
             if not _target_manageable(user, tgt):
                 return _resp_json({'detail': '该账号权限超过你，不能操作'}, 403)
         sets, args = [], []
+        disable = demote = False
         if d.get('password') is not None:
-            if len(d['password']) < 6:
+            if not isinstance(d['password'], str) or len(d['password']) < 6:
                 return _resp_json({'detail': '密码至少 6 位'}, 400)
             sets.append('password_hash=%s'); args.append(hash_password(d['password']))
             sets.append('token_ver=token_ver+1')      # 被重置密码的账号，手里的旧凭证全部失效
         if d.get('real_name') is not None:
             sets.append('real_name=%s'); args.append(str(d['real_name']).strip()[:64])
         if d.get('status') is not None:
-            if int(d['status']) not in (0, 1):
+            st = d['status']
+            if not isinstance(st, int) or isinstance(st, bool) or st not in (0, 1):
                 return _resp_json({'detail': 'status 只能是 0/1'}, 400)
-            if int(d['status']) == 0 and target_id == user['uid']:
+            if st == 0 and target_id == user['uid']:
                 return _resp_json({'detail': '不能停用自己'}, 400)
-            sets.append('status=%s'); args.append(int(d['status']))
+            sets.append('status=%s'); args.append(st)
+            disable = (st == 0)
         if is_admin and d.get('role') is not None:
             if d['role'] not in ('admin', 'staff'):
                 return _resp_json({'detail': '角色无效'}, 400)
             if d['role'] != 'admin' and target_id == user['uid']:
                 return _resp_json({'detail': '不能降级自己'}, 400)
             sets.append('role=%s'); args.append(d['role'])
+            demote = (d['role'] == 'staff')
         if is_admin and (d.get('can_fields') is not None or d.get('can_users') is not None):
             if tgt['role'] == 'admin':
                 return _resp_json({'detail': '管理员默认拥有全部能力'}, 400)
@@ -918,14 +929,12 @@ def _gate(request):
                     sets.append(k + '=%s'); args.append(1 if d[k] else 0)
         if not sets:
             return _resp_json({'detail': '没有可更新的字段'}, 400)
-        # 保护最后一个可用管理员
-        if ('status=%s' in sets and args[sets.index('status=%s')] == 0) or \
-           ('role=%s' in sets and args[sets.index('role=%s')] == 'staff'):
-            if tgt['role'] == 'admin' and tgt['status'] == 1:
-                n = q("SELECT COUNT(*) n FROM kb_user WHERE role='admin' AND status=1 AND id<>%s",
-                      (target_id,), one=True)['n']
-                if n == 0:
-                    return _resp_json({'detail': '这是最后一个可用管理员，不能停用/降级'}, 400)
+        # 保护最后一个可用管理员（disable / demote 单独记：sets 里有不带参数的 token_ver=…，不能拿 sets 的下标去取 args）
+        if (disable or demote) and tgt['role'] == 'admin' and tgt['status'] == 1:
+            n = q("SELECT COUNT(*) n FROM kb_user WHERE role='admin' AND status=1 AND id<>%s",
+                  (target_id,), one=True)['n']
+            if n == 0:
+                return _resp_json({'detail': '这是最后一个可用管理员，不能停用/降级'}, 400)
         args.append(target_id)
         ex(f"UPDATE kb_user SET {','.join(sets)} WHERE id=%s", tuple(args))
         clear_account_cache()
@@ -978,7 +987,8 @@ def _gate(request):
         if not _can_users(user):
             return _resp_json({'detail': '需要账号管理权限'}, 403)
         uid = (request.query_params.get('uid') or '').strip()
-        if not uid.isdigit():
+        # 只认普通数字：'²' 这类字符 isdigit() 也为真，却转不成整数
+        if not (uid.isascii() and uid.isdigit()):
             return _resp_json({'detail': 'uid 无效'}, 400)
         if user['role'] != 'admin':
             tgt = q("SELECT id,username,role,status,can_fields,can_users,created_by FROM kb_user WHERE id=%s",
@@ -1056,13 +1066,16 @@ def _gate(request):
         if not user:
             return _resp_json({'detail': '请先登录'}, 401)
         d = request.state.gate_body
+        old, new = d.get('old_password'), d.get('new_password')
+        if not isinstance(old, str) or not isinstance(new, str):
+            return _resp_json({'detail': '原密码或新密码格式不对'}, 400)
         acct = q("SELECT password_hash FROM kb_user WHERE id=%s", (user['uid'],), one=True)
-        if not acct or not verify_password(d.get('old_password') or '', acct['password_hash']):
+        if not acct or not verify_password(old, acct['password_hash']):
             return _resp_json({'detail': '原密码不正确'}, 400)
-        if len(d.get('new_password') or '') < 6:
+        if len(new) < 6:
             return _resp_json({'detail': '新密码至少 6 位'}, 400)
-        ex("UPDATE kb_user SET password_hash=%s, token_ver=token_ver+1 WHERE id=%s",
-           (hash_password(d['new_password']), user['uid']))
+        ex("UPDATE kb_user SET password_hash=%s,token_ver=token_ver+1 WHERE id=%s",
+           (hash_password(new), user['uid']))
         clear_account_cache()
         return _resp_json({'ok': True, 'detail': '已修改，旧登录即刻失效，请用新密码重新登录'},
                           clear_cookie=True)
@@ -1143,6 +1156,8 @@ async def _security_middleware(request, call_next):
     # 页面响应由各自的处理函数带上按内容算好的策略；这里是给接口等其它响应的严格兜底
     h.setdefault('Content-Security-Policy', csp_for_html())
     h.setdefault('X-Robots-Tag', 'noindex, nofollow, noarchive')
+    # HSTS 只在云托管（上层是受信任证书的 HTTPS）时发。本机自签证书的局域网部署故意不发：
+    # 浏览器一旦记住某主机只走 HTTPS，证书不受信任时就不再给“继续前往”，没装信任证书的同事会被直接挡在门外。
     if _GATE_HTTPS:
         h.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
     p = request.url.path
