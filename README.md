@@ -28,7 +28,15 @@
 本仓库只有代码，**不含任何数据库快照或业务数据**（`migration/*.json`、`migration/*.sql.gz` 都在 `.gitignore` 里，
 不会随代码分发）。从零部署是**空库起步**，没有任何示例数据：
 
-1. **准备数据库**：MySQL 5.7+/8.0（utf8mb4）。可以先建一个空库，也可以在下面第 3 步让向导自动建。
+0. **装运行环境**：Python **3.11**（代码用了 `str | None` 写法，3.10 以下起不来；3.11 已验证）、MySQL 5.7+/8.0。
+   克隆仓库后先装依赖：
+   ```bash
+   git clone https://github.com/wangyu9926-ai/tables.git
+   cd tables
+   pip install -r requirements.txt
+   ```
+1. **准备数据库**：MySQL 5.7+/8.0（utf8mb4）。可以先建一个空库，也可以在下面第 3 步让向导自动建
+   （自动建库需要该账号有 `CREATE` 权限，没有就先手动建好空库）。
 2. **配连接（二选一）**：环境变量 `MUMA_DB_HOST` / `MUMA_DB_PORT` / `MUMA_DB_USER` / `MUMA_DB_PASSWORD` / `MUMA_DB_NAME`，
    或者什么都不配、直接走第 3 步的向导（它会写进 `backend/local.secrets.json`，该文件不进仓库）。
    建议给应用单独建一个最小权限的数据库账号，不要用 root。
@@ -48,6 +56,8 @@
 | 现象 | 原因 / 处理 |
 |---|---|
 | 双击 `启动看板-带登录.bat` 窗口一闪就关，或报 `'xxx' 不是内部或外部命令` | `.bat` 必须是 **GBK + CRLF**（仓库带了 `.gitattributes`，别用编辑器另存成 UTF-8/LF）。临时排查：在窗口里手动跑 `python auth_gate/run_gate.py` 看报错 |
+| `ModuleNotFoundError: No module named 'fastapi'`（或 pandas / pymysql 等） | 没装依赖：在项目目录执行 `pip install -r requirements.txt` |
+| `TypeError: unsupported operand type(s) for \|: 'type' and 'NoneType'` | Python 版本太低：需要 **3.10+**（推荐 3.11），用 `python --version` 确认 |
 | `[gate] 端口 8614 绑定失败` | 已有一个实例在跑：`netstat -ano \| findstr :8614` 找 PID 结束它；或换端口 `set GATE_PORT=8615` 再启动 |
 | 启动时一直问数据库 / 连不上 | 云数据库要把当前出口 IP 加进白名单；内网库确认地址端口；口令错会提示重填。想跳过向导就直接配环境变量 `MUMA_DB_*` |
 | `Access denied for user ...` | 账号没有这个库的权限：给应用单独开一个最小权限账号（`SELECT/INSERT/UPDATE/DELETE/CREATE/ALTER`） |

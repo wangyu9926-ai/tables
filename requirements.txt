@@ -1,0 +1,14 @@
+# 运行必需（已在 Python 3.11 + 下列最低版本上验证）
+fastapi>=0.133.1
+uvicorn>=0.41.0
+pymysql>=1.2.0
+cryptography>=48.0.1       # 首次启动生成本机自签 HTTPS 证书
+python-multipart>=0.0.32    # 上传/导入接口的 Form / File
+
+# Excel 导入（表页「导入」：xlsx / xlsm / xls / csv）
+pandas>=3.0.5
+openpyxl>=3.1.5
+xlrd>=2.0.2
+
+# 回归脚本 prelaunch_test.py 用
+requests>=2.33.0
