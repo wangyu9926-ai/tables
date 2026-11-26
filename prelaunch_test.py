@@ -555,6 +555,17 @@ for body in ({'username': ['x'], 'password': '12345678'}, {'username': {'a': 1},
              {'username': '__pretest__pw', 'password': '12345678', 'real_name': ['r']}):
     r = admin.post('/__auth/users', body)
     check(f'建账号字段类型不对 {str(body)[:28]} → 400', r.status_code == 400, f'{r.status_code} {r.text[:60]}')
+# 按公式列排序：可计算出的数值和“算不出来”的文本混在一起时不能 500（生产真实数据上发现的）
+r = admin.post('/api/tables', {'name': TAG + '混合公式', 'project': PRJ,
+                               'columns': [{'label': '数量', 'type': 'number'},
+                                           {'label': '混合', 'type': 'formula', 'expr': 'IF({数量}>0,{数量}*2,"—")'}]})
+_MT = j(r)['id']
+for _q in (1, None, 5):
+    admin.post(f'/api/tables/{_MT}/rows', {'data': {} if _q is None else {'数量': _q}})
+for _d in ('asc', 'desc'):
+    r = admin.get(f'/api/tables/{_MT}/rows?size=0&sort=混合&dir={_d}')
+    check(f'按公式列排序（数值与文本混排）{_d} 不 500', r.status_code == 200, f'{r.status_code} {r.text[:80]}')
+
 # 超过 2^53 的整数：接口以字符串返回，浏览器显示才不丢精度（写库仍是精确整数）
 r = admin.post('/api/tables', {'name': TAG + '大数字', 'project': PRJ, 'columns': [{'label': '值', 'type': 'number'}]})
 _BT = j(r)['id']
