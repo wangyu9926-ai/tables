@@ -122,13 +122,23 @@ def cleanup():
             ex(f'DELETE FROM kb_row WHERE table_id IN ({ph})', tuple(tids2))
             ex(f'DELETE FROM kb_audit WHERE table_id IN ({ph})', tuple(tids2))
             ex(f'DELETE FROM kb_image WHERE table_id IN ({ph})', tuple(tids2))
+            for _t in ('kb_view', 'kb_idem'):          # 新表：老库第一次跑清理时可能还没建
+                try:
+                    ex(f'DELETE FROM {_t} WHERE table_id IN ({ph})', tuple(tids2))
+                except Exception:
+                    pass
             ex(f'DELETE FROM kb_table WHERE id IN ({ph})', tuple(tids2))
         ex('DELETE FROM kb_project WHERE name LIKE %s', (TAG + '%',))
         ex('DELETE FROM kb_dashboard WHERE name LIKE %s', (TAG + '%',))    # 接口删看板是软删，这里物理清掉
         ex('DELETE FROM kb_user WHERE username LIKE %s', (TAG + '%',))
         ex('DELETE FROM kb_perm WHERE scope_key LIKE %s', (TAG + '%',))
         ex("DELETE FROM kb_perm WHERE user_id NOT IN (SELECT id FROM kb_user)")
-        ex('DELETE FROM kb_audit WHERE INSTR(CAST(detail AS CHAR), %s) > 0', (TAG,))   # 表已删掉的那些审计
+        ex('DELETE FROM kb_audit WHERE INSTR(CAST(detail AS CHAR), %s) > 0', (TAG,))
+        for _t in ('kb_view', 'kb_idem'):          # 表已经删掉、但视图/幂等键还挂着的（以前跑出来的残留）
+            try:
+                ex(f'DELETE FROM {_t} WHERE table_id NOT IN (SELECT id FROM kb_table)')
+            except Exception:
+                pass   # 表已删掉的那些审计
         print('cleanup done')
     except Exception as e:
         print('cleanup error:', e)
@@ -1061,6 +1071,144 @@ _d = j(r)
 check('按 ID 取行只返回存在的行', r.status_code == 200 and len(_d.get('rows', [])) == 2
       and {x['id'] for x in _d['rows']} == {rids[0], rids[1]}
       and all('ver' in x and 'data' in x for x in _d['rows']), r.text[:160])
+
+# ==================== 9.5 批量行 / Excel 导出 / 服务端视图 / 写入幂等 / 清理工具 ====================
+PRJ2 = TAG + '新功能'
+r = admin.post('/api/projects', {'name': PRJ2})
+check('新功能测试项目', r.status_code == 200, r.text[:80])
+r = admin.post('/api/tables', {'name': PRJ2 + '·表', 'project': PRJ2, 'columns': [
+    {'label': '名称', 'type': 'text'}, {'label': '数量', 'type': 'number'},
+    {'label': '双倍', 'type': 'formula', 'expr': '{数量}*2'}]})
+check('新功能测试表（含公式列）', r.status_code == 200, r.text[:120])
+NT = j(r)['id']
+
+# 批量行：界面上的粘贴 / 清空选区 / 填充柄都走这一个接口
+r = admin.post(f'/api/tables/{NT}/rows/bulk', {'rows': [{'data': {'名称': 'b1', '数量': 1}},
+                                                      {'data': {'名称': 'b2', '数量': 2}}]})
+_d = j(r)
+check('批量行新建 2 行', r.status_code == 200 and _d.get('updated') == 0
+      and len(_d.get('created') or []) == 2, r.text[:160])
+_rows = j(admin.get(f'/api/tables/{NT}/rows?size=0'))['rows']
+check('批量新建的行公式算好（1→2, 2→4）',
+      sorted(x['data'].get('双倍') for x in _rows) == [2, 4], str(_rows)[:200])
+_b1 = next(x for x in _rows if x['data'].get('名称') == 'b1')
+r = admin.post(f'/api/tables/{NT}/rows/bulk', {'rows': [
+    {'id': _b1['id'], 'ver': _b1['ver'], 'data': {'数量': 10}},
+    {'id': _b1['id'], 'ver': 999, 'data': {'数量': 11}},
+    {'id': 999999, 'data': {'数量': 1}},
+    {'data': {'名称': 'b3', '数量': 3}}]})
+_d = j(r)
+check('批量行：正常改 / 版本冲突 / 行不存在 / 新建 分开返回',
+      r.status_code == 200 and _d.get('updated') == 1 and len(_d.get('conflicts') or []) == 1
+      and any(x.get('id') == 999999 for x in (_d.get('errors') or []))
+      and len(_d.get('created') or []) == 1, r.text[:200])
+_rows = j(admin.get(f'/api/tables/{NT}/rows?size=0'))['rows']
+check('批量改数量后公式跟着变（10→20）',
+      any(x['id'] == _b1['id'] and x['data'].get('双倍') == 20 for x in _rows), str(_rows)[:200])
+check('批量行：空数组 400 / 超过 500 行 400 / 缺 rows 400·422',
+      admin.post(f'/api/tables/{NT}/rows/bulk', {'rows': []}).status_code == 400
+      and admin.post(f'/api/tables/{NT}/rows/bulk', {'rows': [{'data': {'名称': 'x'}}] * 501}).status_code == 400
+      and admin.post(f'/api/tables/{NT}/rows/bulk', {}).status_code in (400, 422), '')
+
+# Excel 导出（界面「导出」下拉里的 xlsx）
+r = admin.get(f'/api/tables/{NT}/export?fmt=xlsx')
+check('xlsx 导出返回 Excel 文件', r.status_code == 200 and r.content[:2] == b'PK'
+      and 'spreadsheetml' in (r.headers.get('content-type') or ''),
+      f'{r.status_code} {r.headers.get("content-type")}')
+if r.content[:2] == b'PK':
+    import openpyxl as _ox
+    _wb = _ox.load_workbook(io.BytesIO(r.content))
+    _ws = _wb.active
+    check('xlsx：表头是列名、冻结首行、公式列是算好的值',
+          [c.value for c in _ws[1]] == ['名称', '数量', '双倍'] and _ws.freeze_panes == 'A2'
+          and any(row[2].value == 20 for row in _ws.iter_rows(min_row=2)),
+          'freeze=%s' % _ws.freeze_panes)
+else:
+    check('xlsx：表头是列名、冻结首行、公式列是算好的值', False, '返回的不是 xlsx')
+
+# 服务端视图：自己的 + 团队共享的
+r = admin.post(f'/api/tables/{NT}/views', {'name': TAG + '个人视图', 'config': {'kw': 'k1'}})
+check('保存个人视图', r.status_code == 200, r.text[:100])
+r = admin.post(f'/api/tables/{NT}/views', {'name': TAG + '团队视图', 'config': {'kw': 'k2'}, 'shared': True})
+check('保存团队视图', r.status_code == 200, r.text[:100])
+_tvid = j(r).get('id')
+admin.post(f'/api/tables/{NT}/views', {'name': TAG + '个人视图', 'config': {'kw': 'k1b'}})
+_v = {x['name']: x for x in j(admin.get(f'/api/tables/{NT}/views'))['views']}
+check('视图列表：同名覆盖、个人与团队都在',
+      (_v.get(TAG + '个人视图') or {}).get('config', {}).get('kw') == 'k1b'
+      and (_v.get(TAG + '团队视图') or {}).get('shared') is True, str(_v)[:200])
+check('编辑权限的人可以共享团队视图', j(admin.get(f'/api/tables/{NT}/views')).get('can_share') is True, '')
+_rv = TAG + 'roview'
+admin.post('/__auth/users', {'username': _rv, 'password': 'test123456', 'role': 'staff'})
+_ro = next(u for u in j(admin.get('/__auth/users'))['users'] if u['username'] == _rv)
+admin.post('/__auth/grants', {'uid': _ro['id'], 'scope_type': 'project', 'scope_key': PRJ2, 'role': 'viewer'})
+rov = Api(issue_token(_ro['id'], _rv, 'staff'))
+_d = j(rov.get(f'/api/tables/{NT}/views'))
+check('只读账号：看得到团队视图、看不到别人的个人视图、不能共享',
+      any(x['name'] == TAG + '团队视图' for x in _d.get('views') or [])
+      and not any(x['name'] == TAG + '个人视图' for x in _d.get('views') or [])
+      and _d.get('can_share') is False, str(_d)[:200])
+check('只读账号不能保存团队视图 403',
+      rov.post(f'/api/tables/{NT}/views', {'name': TAG + 'x', 'config': {}, 'shared': True}).status_code == 403, '')
+check('只读账号不能批量写 403',
+      rov.post(f'/api/tables/{NT}/rows/bulk',
+               {'rows': [{'id': _b1['id'], 'data': {'数量': 1}}]}).status_code == 403, '')
+check('只读账号能存自己的视图',
+      rov.post(f'/api/tables/{NT}/views', {'name': TAG + 'ro自有', 'config': {}}).status_code == 200, '')
+_rv2 = [x for x in j(rov.get(f'/api/tables/{NT}/views'))['views'] if x['name'] == TAG + 'ro自有']
+check('删自己的视图 200', bool(_rv2) and rov.delete(f'/api/views/{_rv2[0]["id"]}').status_code == 200, '')
+check('不能删别人的团队视图 403', rov.delete(f'/api/views/{_tvid}').status_code == 403, '')
+check('管理员能删团队视图', admin.delete(f'/api/views/{_tvid}').status_code == 200, '')
+
+# HTTP 写入幂等键：脚本重试（超时/抖动）不会重复插入
+_ik = j(admin.post(f'/api/tables/{NT}/apikeys', {'note': TAG + 'idem'}))['key']
+_h1 = admin.post(f'/api/in/{NT}', {'data': {'名称': '幂等行'}},
+                 headers={'X-KB-Token': _ik, 'X-Idempotency-Key': TAG + 'k1'})
+_h2 = admin.post(f'/api/in/{NT}', {'data': {'名称': '幂等行'}},
+                 headers={'X-KB-Token': _ik, 'X-Idempotency-Key': TAG + 'k1'})
+check('同一个幂等键重试只写一次、返回上次结果',
+      _h1.status_code == 200 and j(_h1).get('inserted') == 1 and j(_h2).get('replayed') is True
+      and j(_h2).get('ids') == j(_h1).get('ids'), _h2.text[:160])
+check('库里只有一条幂等行',
+      sum(1 for x in j(admin.get(f'/api/tables/{NT}/rows?size=0'))['rows']
+          if x['data'].get('名称') == '幂等行') == 1, '')
+_h3 = admin.post(f'/api/in/{NT}', {'data': {'名称': '幂等行'}},
+                 headers={'X-KB-Token': _ik, 'X-Idempotency-Key': TAG + 'k2'})
+check('换一个幂等键就是新的一次写入', _h3.status_code == 200 and j(_h3).get('inserted') == 1, _h3.text[:120])
+
+# 畸形批量输入：一条坏数据只影响它自己，接口不能 500
+_r = admin.post(f'/api/tables/{NT}/rows/bulk', {'rows': [
+    {'id': {'x': 1}, 'data': {'名称': 'x'}},
+    {'id': _b1['id'], 'ver': '中文', 'data': {'名称': 'x'}},
+    {'id': _b1['id'], 'ver': True, 'data': {'名称': 'x'}},
+    {'id': [1], 'data': {}},
+    {'data': {'数量': 'abc'}}]})
+_dt = ' | '.join(str(x.get('detail')) for x in (j(_r).get('errors') or []))
+check('批量行：畸形 id / ver 逐条报错、不 500',
+      _r.status_code == 200 and 'id 必须是整数' in _dt and 'ver 必须是整数' in _dt, _dt[:200])
+
+# 图片配额：一张表的图片总量到顶就拒绝（塞一条占位的假记录，测完立刻删掉）
+import base64 as _b64  # noqa: E402
+_PNG = _b64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+from backend.engine import ex as _ex2  # noqa: E402
+_ex2("INSERT INTO kb_image(table_id,mime,size,data) VALUES(%s,%s,%s,%s)",
+     (NT, 'image/png', 512 * 1024 * 1024, b''))
+r = admin.s.post(BASE + '/api/upload/image', files={'file': ('a.png', _PNG, 'image/png')}, data={'tid': NT})
+check('图片配额满了返回 413', r.status_code == 413, f'{r.status_code} {r.text[:120]}')
+_ex2('DELETE FROM kb_image WHERE table_id=%s', (NT,))
+r = admin.s.post(BASE + '/api/upload/image', files={'file': ('a.png', _PNG, 'image/png')}, data={'tid': NT})
+check('配额腾出来后正常上传', r.status_code == 200, f'{r.status_code} {r.text[:120]}')
+
+# 库结构版本 + 软删清理工具（默认只统计，不动数据）
+from backend.engine import q as _q2  # noqa: E402
+check('库里有 schema_version', bool((_q2("SELECT v FROM kb_setting WHERE k='schema_version'", one=True) or {}).get('v')), '')
+_before = _q2('SELECT COUNT(*) n FROM kb_row', one=True)['n']
+import subprocess as _spp  # noqa: E402
+_p = _spp.run([sys.executable, 'tools/purge_deleted.py'], capture_output=True, text=True, timeout=180)
+check('清理工具默认只统计、不删数据',
+      _p.returncode == 0 and '只统计' in (_p.stdout or '')
+      and _q2('SELECT COUNT(*) n FROM kb_row', one=True)['n'] == _before,
+      (_p.stdout or _p.stderr)[-240:])
 
 # ==================== 10. 删表 / 删项目 ====================
 r = admin.delete(f'/api/tables/{T2}')

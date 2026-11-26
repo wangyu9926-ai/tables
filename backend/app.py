@@ -187,6 +187,13 @@ def _invalidate_after(method, path, inserted=0):
         _drop_rows(tid)
         invalidate_xt_table(tid)
         return
+    m = re.fullmatch(r'/api/tables/(\d+)/rows/bulk', path)
+    if m:
+        tid = int(m.group(1))
+        _drop_rows(tid)
+        invalidate_xt_table(tid)
+        _bump_meta_count(tid, int(inserted or 0))
+        return
     m = re.fullmatch(r'/api/tables/(\d+)/rows(?:/(\d+))?', path)
     if m:
         tid = int(m.group(1))
@@ -1450,6 +1457,113 @@ def rows_by_ids(tid: int, ids: str = ''):
     return _json_response({'rows': _rows_view(tid, recs, columns(tid), project)})
 
 
+class RowBulkReq(BaseModel):
+    rows: list      # [{id?, data, ver?}]：带 id 走更新（ver 乐观锁），不带 id 就新建
+
+
+@app.post("/api/tables/{tid}/rows/bulk")
+def rows_bulk(tid: int, req: RowBulkReq, request: Request):
+    """粘贴大块内容 / 清空选区 / 填充柄：一次请求改多行或补建缺少的行。
+    某一行失败（版本冲突、值不合法）只把那一行单独返回，不影响其它行；新建的行排在表尾。"""
+    t = _need(tid)
+    need_table(tid, t.get('project') or '', write=True)
+    items = req.rows if isinstance(req.rows, list) else []
+    if not items or len(items) > 500:
+        raise HTTPException(400, 'rows 需要 1~500 条')
+    cols = _table_columns(tid, include_hidden=True)
+    bykey = {c['key']: c for c in cols if c['type'] != 'formula'}
+    actor = (AUTH_USER.get() or {}).get('username') or 'local'
+    updated, conflicts, errors, created = [], [], [], []
+    con = conn()
+    try:
+        cur = con.cursor()
+        nxt = None
+        for i, it in enumerate(items):
+            if not isinstance(it, dict):
+                errors.append({'index': i, 'detail': '不是对象'})
+                continue
+            data = it.get('data')
+            if not isinstance(data, dict):
+                errors.append({'index': i, 'detail': 'data 必须是对象'})
+                continue
+            clean = {}
+            try:
+                for k, v in data.items():
+                    if not isinstance(k, str):      # JSON 键一定是文本，这里只防手工构造的畸形请求
+                        continue
+                    c = bykey.get(k)
+                    if c:
+                        clean[c['key']] = norm_val(c, v)
+            except (ValueError, TypeError) as e:
+                errors.append({'index': i, 'detail': str(e)})
+                continue
+            raw_id = it.get('id')
+            rid = None
+            if raw_id not in (None, '', 0, '0', False):
+                if isinstance(raw_id, bool) or not (
+                        isinstance(raw_id, int)
+                        or (isinstance(raw_id, str) and raw_id.isascii() and raw_id.isdigit())):
+                    errors.append({'index': i, 'detail': 'id 必须是整数'})
+                    continue
+                rid = int(raw_id)
+            if rid:
+                cur.execute("SELECT data,ver FROM kb_row WHERE id=%s AND table_id=%s AND deleted=0",
+                            (rid, tid))
+                row = cur.fetchone()
+                if not row:
+                    errors.append({'index': i, 'id': rid, 'detail': '行不存在'})
+                    continue
+                ver = it.get('ver')
+                if ver is not None and not isinstance(ver, bool):
+                    try:
+                        ver = int(ver)
+                    except (TypeError, ValueError):
+                        errors.append({'index': i, 'id': rid, 'detail': 'ver 必须是整数'})
+                        continue
+                elif isinstance(ver, bool):
+                    errors.append({'index': i, 'id': rid, 'detail': 'ver 必须是整数'})
+                    continue
+                if ver is not None and ver != int(row['ver']):
+                    conflicts.append({'index': i, 'id': rid, 'ver': row['ver']})
+                    continue
+                merged = jload(row['data'])
+                merged.update(clean)
+                cur.execute("UPDATE kb_row SET data=%s,ver=ver+1 WHERE id=%s AND table_id=%s",
+                            (jdump(merged), rid, tid))
+                updated.append({'id': rid, 'ver': int(row['ver']) + 1, 'data': merged})
+            else:
+                if nxt is None:
+                    cur.execute("SELECT COALESCE(MAX(sort),0) m FROM kb_row WHERE table_id=%s", (tid,))
+                    nxt = int((cur.fetchone() or {}).get('m') or 0)
+                nxt += 1
+                cur.execute("INSERT INTO kb_row(table_id,data,sort) VALUES(%s,%s,%s)",
+                            (tid, jdump(clean), nxt))
+                created.append({'id': cur.lastrowid, 'ver': 1, 'data': clean})
+        con.commit()
+    except Exception:
+        try:
+            con.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        con.close()
+    for r in updated:
+        audit(tid, r['id'], 'update_row', {k: {'old': None, 'new': v} for k, v in r['data'].items()})
+    for r in created:
+        audit(tid, r['id'], 'create_row', {k: {'old': None, 'new': v} for k, v in r['data'].items()})
+    kb_changes.bump(tid, 'update', [r['id'] for r in updated] + [r['id'] for r in created], actor)
+    ids = [r['id'] for r in updated]
+    if ids:
+        try:
+            kb_sync.source_ids(tid, ids)
+        except Exception as e:
+            print(f'[sync] bulk update hook failed: {e!r}', flush=True)
+    request.state.kb_inserted = len(created)      # 缓存只失效这张表并补上行数
+    return _json_response(_json_safe_numbers({'ok': True, 'updated': len(updated), 'created': created,
+                                              'conflicts': conflicts, 'errors': errors}))
+
+
 @app.post("/api/tables/{tid}/rows")
 def create_row(tid: int, req: RowReq):
     _t = _need(tid)
@@ -1907,11 +2021,53 @@ def _csv_cell(v):
 
 
 @app.get("/api/tables/{tid}/export")
-def export_csv(tid: int):
+def export_table(tid: int, fmt: str = ''):
+    """导出：默认 CSV；fmt=xlsx 导出 Excel（表头加粗冻结、按列宽设定、公式导出算好的值）。"""
     t = _need(tid)
     need_table(tid, t.get('project') or '')
     cols = columns(tid)
     project = t.get('project') or ''
+    if fmt == 'xlsx':
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill
+        from openpyxl.utils import get_column_letter
+        wb = Workbook()
+        ws = wb.active
+        ws.title = ((t['name'].split('·')[1] if '·' in t['name'] else t['name']) or 'Sheet1')[:31]
+        head_font = Font(bold=True)
+        head_fill = PatternFill('solid', fgColor='F2F4F7')
+        for j, c in enumerate(cols, 1):
+            cell = ws.cell(row=1, column=j, value=c['label'])
+            cell.font = head_font
+            cell.fill = head_fill
+            cell.alignment = Alignment(vertical='center')
+            w = int(c.get('width') or 0)
+            ws.column_dimensions[get_column_letter(j)].width = max(8, min(40, round(w / 7) if w else 14))
+        ws.freeze_panes = 'A2'
+        rw = 1
+        for r in q("SELECT data FROM kb_row WHERE table_id=%s AND deleted=0 ORDER BY sort,id", (tid,)):
+            rw += 1
+            d = compute_formulas(jload(r['data']), cols, project)
+            for j, c in enumerate(cols, 1):
+                v = d.get(c['key'])
+                if isinstance(v, list):
+                    v = ','.join(str(x) for x in v)
+                elif isinstance(v, bool):
+                    v = '是' if v else (None if c['type'] == 'checkbox' else v)
+                elif c['type'] == 'number' and v is not None:
+                    try:
+                        v = float(v) if '.' in str(v) else int(v)
+                    except Exception:
+                        pass
+                elif v is not None and not isinstance(v, (int, float, str)):
+                    v = str(v)
+                ws.cell(row=rw, column=j, value=v)
+        out = io.BytesIO()
+        wb.save(out)
+        fname = quote(f"{t['name']}.xlsx")
+        return StreamingResponse(iter([out.getvalue()]),
+                                 media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                                 headers={'Content-Disposition': f"attachment; filename*=UTF-8''{fname}"})
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow([c['label'] for c in cols])
@@ -1926,6 +2082,8 @@ def export_csv(tid: int):
 # ==================== 图片上传 / 读取 ====================
 
 _IMG_MAX = 8 * 1024 * 1024
+# 每张表的图片总量上限（默认 512MB）：图片和数据在同一个库里，一张表塞满会把整个库拖垮
+_IMG_TABLE_MAX = int(os.environ.get('KB_IMAGE_TABLE_MB', '512')) * 1024 * 1024
 
 
 def _image_kind(raw):
@@ -1999,6 +2157,11 @@ def upload_image(file: UploadFile = File(...), tid: int = Form(...)):
     mime = _image_kind(raw)
     if not mime:
         raise HTTPException(400, '只支持 png / jpg / gif / webp / bmp')
+    used = int(q("SELECT COALESCE(SUM(size),0) s FROM kb_image WHERE table_id=%s AND deleted=0",
+                 (tid,), one=True)['s'] or 0)
+    if used + len(raw) > _IMG_TABLE_MAX:
+        raise HTTPException(413, f'这张表的图片已用 {used // 1048576}MB，上限 {_IMG_TABLE_MAX // 1048576}MB'
+                                 f'（KB_IMAGE_TABLE_MB 可调）；先把回收站里的图片彻底删掉')
     actor = (AUTH_USER.get() or {}).get('username') or 'local'
     iid = ex("INSERT INTO kb_image(table_id,mime,size,data,created_by) VALUES(%s,%s,%s,%s,%s)",
              (tid, mime, len(raw), raw, actor))
@@ -2089,7 +2252,8 @@ def apikey_revoke(tid: int, kid: int):
 
 
 @app.post("/api/in/{tid}")
-def api_insert(request: Request, tid: int, req: ApiInsertReq, x_kb_token: str = Header(default='')):
+def api_insert(request: Request, tid: int, req: ApiInsertReq, x_kb_token: str = Header(default=''),
+               x_idempotency_key: str = Header(default='')):
     """免登录写入（影刀 / RPA / 脚本用）。请求头 `X-KB-Token: kbk_...`。
 
     body 二选一：{"data":{...}} 单行；{"rows":[{...},...]} 批量（≤1000 行）。
@@ -2130,6 +2294,21 @@ def api_insert(request: Request, tid: int, req: ApiInsertReq, x_kb_token: str = 
             if c['key'] not in clean or clean[c['key']] in (None, '', []):
                 raise HTTPException(400, f'第 {i + 1} 行：列「{c["label"]}」必填')
         clean_rows.append(clean)
+    # 幂等键：脚本重试（超时、网络抖动）不会重复插入——同一个键只写一次，重试直接返回上次的结果
+    idem = (x_idempotency_key or '').strip()[:120]
+    if idem:
+        prev = q("SELECT result FROM kb_idem WHERE table_id=%s AND idem_key=%s", (tid, idem), one=True)
+        if prev:
+            out = jload(prev['result'])
+            out['replayed'] = True
+            return _json_response(out)
+        try:
+            ex("INSERT INTO kb_idem(table_id,idem_key,result) VALUES(%s,%s,'{}')", (tid, idem))
+        except pymysql.err.IntegrityError:
+            prev = q("SELECT result FROM kb_idem WHERE table_id=%s AND idem_key=%s", (tid, idem), one=True)
+            out = jload(prev['result']) if prev else {}
+            out['replayed'] = True
+            return _json_response(out)
     mx = q("SELECT COALESCE(MAX(sort),0) m FROM kb_row WHERE table_id=%s",
            (tid,), one=True)['m']
     actor = ('api:' + (key['note'] or ('key#' + str(key['id']))))[:64]
@@ -2155,7 +2334,15 @@ def api_insert(request: Request, tid: int, req: ApiInsertReq, x_kb_token: str = 
         kb_sync.source_ids(tid, ids)
     except Exception as e:
         print(f'[sync] api_insert hook failed: {e!r}', flush=True)
-    return {'ok': True, 'inserted': len(clean_rows), 'ids': ids}
+    result = {'ok': True, 'inserted': len(clean_rows), 'ids': ids}
+    if idem:
+        try:
+            ex("UPDATE kb_idem SET result=%s WHERE table_id=%s AND idem_key=%s",
+               (jdump(result), tid, idem))
+            ex("DELETE FROM kb_idem WHERE at < NOW() - INTERVAL 7 DAY")     # 顺手清理过期的
+        except Exception as e:
+            print(f'[db] 写入幂等结果失败：{e!r}', flush=True)
+    return result
 
 
 # ==================== Excel / CSV 导入 ====================
@@ -2925,6 +3112,69 @@ def delete_sync(sid: int):
     _need_admin()
     if not kb_sync.delete_config(sid, purge=True):
         raise HTTPException(404, '汇总规则不存在')
+    return {'ok': True}
+
+
+# ==================== 保存的视图（本机 + 团队共享） ====================
+
+class ViewReq(BaseModel):
+    name: str = ''
+    config: dict | None = None
+    shared: bool = False
+
+
+@app.get("/api/tables/{tid}/views")
+def list_views(tid: int):
+    """这张表的视图：自己的 + 所有人共享的团队视图。"""
+    t = _need(tid)
+    need_table(tid, t.get('project') or '')
+    uid = _uid()
+    rows = q("SELECT id,name,owner_id,owner_name,shared,config,"
+             "DATE_FORMAT(updated_at,'%%Y-%%m-%%d %%H:%%i') AS updated_at FROM kb_view "
+             "WHERE table_id=%s AND (owner_id=%s OR shared=1) "
+             "ORDER BY shared DESC, updated_at DESC, id DESC", (tid, uid))
+    out = []
+    for r in rows:
+        cfg = jload(r['config'])
+        out.append({'id': r['id'], 'name': r['name'], 'owner': r['owner_name'],
+                    'mine': int(r['owner_id']) == int(uid), 'shared': bool(r['shared']),
+                    'config': cfg if isinstance(cfg, dict) else {}, 'updated_at': r['updated_at']})
+    return {'views': out, 'can_share': table_role(tid, t.get('project') or '') == 'editor'}
+
+
+@app.post("/api/tables/{tid}/views")
+def save_view(tid: int, req: ViewReq):
+    """保存视图：同名覆盖。shared=1 是团队视图（本表所有人可见），需要这张表的编辑权限。"""
+    t = _need(tid)
+    need_table(tid, t.get('project') or '')
+    name = (req.name or '').strip()
+    if not name:
+        raise HTTPException(400, '视图名不能为空')
+    _check_len(name, 40, '视图名')
+    cfg = req.config if isinstance(req.config, dict) else {}
+    shared = 1 if req.shared else 0
+    if shared:
+        need_table(tid, t.get('project') or '', write=True)
+    uid = _uid()
+    uname = ((AUTH_USER.get() or {}).get('username') or 'local')[:64]
+    ex("INSERT INTO kb_view(table_id,name,owner_id,owner_name,shared,config) VALUES(%s,%s,%s,%s,%s,%s) "
+       "ON DUPLICATE KEY UPDATE shared=VALUES(shared), config=VALUES(config), owner_name=VALUES(owner_name)",
+       (tid, name, uid, uname, shared, jdump(cfg)))
+    v = q("SELECT id FROM kb_view WHERE table_id=%s AND owner_id=%s AND name=%s", (tid, uid, name), one=True)
+    return {'ok': True, 'id': v['id'] if v else None}
+
+
+@app.delete("/api/views/{vid}")
+def delete_view(vid: int):
+    r = q("SELECT id,table_id,owner_id,owner_name FROM kb_view WHERE id=%s", (vid,), one=True)
+    if not r:
+        raise HTTPException(404, '视图不存在')
+    t = _need(r['table_id'])
+    need_table(r['table_id'], t.get('project') or '')
+    u = AUTH_USER.get() or {}
+    if int(r['owner_id']) != _uid() and u.get('role') != 'admin':
+        raise HTTPException(403, '只能删除自己保存的视图')
+    ex("DELETE FROM kb_view WHERE id=%s", (vid,))
     return {'ok': True}
 
 

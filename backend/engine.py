@@ -209,7 +209,31 @@ SCHEMA = [
       v VARCHAR(255) NOT NULL DEFAULT '',
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS kb_view (
+      id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      table_id INT UNSIGNED NOT NULL,
+      name VARCHAR(80) NOT NULL,
+      owner_id INT UNSIGNED NOT NULL DEFAULT 0,
+      owner_name VARCHAR(64) NOT NULL DEFAULT '',
+      shared TINYINT NOT NULL DEFAULT 0 COMMENT '1=本表所有人可见的团队视图',
+      config JSON NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_view (table_id, owner_id, name),
+      KEY idx_view_t (table_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS kb_idem (
+      table_id INT UNSIGNED NOT NULL,
+      idem_key VARCHAR(120) NOT NULL COMMENT 'X-Idempotency-Key；同一张表同一键只写一次',
+      result JSON NOT NULL,
+      at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (table_id, idem_key),
+      KEY idx_idem_at (at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
 ]
+
+# 结构版本号：改了 SCHEMA 就加一档，升级时能一眼看出库是新是旧
+SCHEMA_VERSION = '2026.11.26-1'
 
 
 def init_schema():
@@ -254,6 +278,12 @@ def init_schema():
         cur.execute("ALTER TABLE kb_image ADD COLUMN deleted TINYINT NOT NULL DEFAULT 0")
         cur.execute("ALTER TABLE kb_image ADD COLUMN deleted_at DATETIME NULL")
         cur.execute("ALTER TABLE kb_image ADD KEY idx_img_del (deleted, deleted_at)")
+    try:
+        # 结构版本号：升级时一眼看出这个库是哪一版结构建的（改 SCHEMA 就同步加一档）
+        cur.execute("INSERT INTO kb_setting(k,v) VALUES('schema_version',%s) "
+                    "ON DUPLICATE KEY UPDATE v=VALUES(v)", (SCHEMA_VERSION,))
+    except Exception as e:
+        print(f'[db] 写入 schema_version 失败：{e!r}', flush=True)
     con.commit()
     con.close()
 

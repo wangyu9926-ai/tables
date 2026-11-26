@@ -167,6 +167,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible,
 .fm-hint { margin:0 0 10px; padding:8px 10px; font-size:12px; line-height:1.6; color:var(--text-3);
   background:var(--gray-50); border-radius:6px; }
 .del-row-sync { color:#8a5a00; }
+#tbody td.in-sel { background:#eef3ff; }
+#tbody td.fill-target { background:#e6f7ee; }
+#fill-handle { position:fixed; width:8px; height:8px; background:#3370ff; border:1px solid #fff;
+  border-radius:1px; z-index:40; cursor:crosshair; display:none; box-shadow:0 0 0 1px rgba(0,0,0,.18); }
+body.filling, body.filling * { cursor:crosshair !important; user-select:none; }
+.ctx-caption { padding:6px 12px 2px; font-size:var(--fs-xs); color:var(--text-3); }
+.ctx-sub { margin-left:8px; font-size:var(--fs-xs); color:var(--text-3); }
 .sheet-tab.on { background:var(--primary-light); color:var(--primary); font-weight:400; }
 .sheet-tab.editing { padding:0 6px; }
 .tab-ipt { width:100%; height:24px; padding:0 6px; border:1px solid var(--primary); border-radius:5px;
@@ -3067,6 +3074,53 @@ function saveCurrentView(){
       };
     });
 }
+var SRV_VIEWS = {};
+function invalidateServerViews(tid){ delete SRV_VIEWS[tid]; }
+function ensureServerViews(tid){
+  if (!tid) return Promise.resolve(null);
+  if (SRV_VIEWS[tid]) return Promise.resolve(SRV_VIEWS[tid]);
+  return api('/api/tables/' + tid + '/views').then(function (d) {
+    SRV_VIEWS[tid] = d || { views: [], can_share: false };
+    return SRV_VIEWS[tid];
+  }).catch(function () { SRV_VIEWS[tid] = { views: [], can_share: false }; return SRV_VIEWS[tid]; });
+}
+function applyServerView(v){
+  var c = v.config || {};
+  applyView({ id: 's' + v.id, name: v.name, kw: c.kw || '', sort: c.sort || '',
+              dir: c.dir || 1, filters: c.filters || {} });
+  toast('已应用团队视图「' + v.name + '」');
+}
+function saveTeamView(){
+  var n = (META && META.tables ? 0 : 0);
+  modal('保存为团队视图',
+    '<div class="frm"><label>视图名称</label><input id="tvw-name" placeholder="例如：全组标准视图 · 只看已发布"></div>'
+    + '<div class="hint">团队视图存在服务端，本表所有人打开都能看到并使用；同名会覆盖。只有保存者和管理员能删除。</div>',
+    '<button class="btn" id="tvw-cancel">取消</button><button class="btn btn-primary" id="tvw-ok">保存</button>',
+    function(){
+      $('tvw-cancel').onclick = closeModal;
+      $('tvw-name').focus();
+      $('tvw-name').onkeydown = function(e){ if(e.key==='Enter') $('tvw-ok').click(); };
+      $('tvw-ok').onclick = async function(){
+        var name = $('tvw-name').value.trim();
+        if(!name){ toast('请填写视图名称'); return; }
+        try {
+          await api('/api/tables/' + state.tid + '/views', 'POST',
+                    { name: name, config: currentViewCore(), shared: true });
+          closeModal(); invalidateServerViews(state.tid); ensureServerViews(state.tid);
+          toast('已保存团队视图「' + name + '」');
+        } catch (e) { toast('保存失败：' + e.message); }
+      };
+    });
+}
+async function deleteServerView(id){
+  try {
+    await api('/api/views/' + id, 'DELETE');
+    invalidateServerViews(state.tid);
+    await ensureServerViews(state.tid);
+    closeViewMenu();
+    toast('已删除团队视图');
+  } catch (e) { toast('删除失败：' + e.message); }
+}
 function closeViewMenu(){ var m=$('view-menu'); if(m) m.remove(); }
 function openViewMenu(){
   var b=$('btn-view'); if(!b) return;
@@ -3082,8 +3136,25 @@ function openViewMenu(){
         + '<span class="vw-del" data-del="'+esc(v.id)+'" title="删除视图">×</span></button>';
     });
   }
+  var sv = SRV_VIEWS[state.tid];
+  html+='<div class="ctx-sep"></div>';
+  if (!sv) {
+    html+='<button type="button" class="ctx-item" disabled><span>团队视图加载中…</span></button>';
+  } else {
+    var sh = (sv.views || []).filter(function (v) { return v.shared; });
+    html+='<div class="ctx-caption">团队视图（本表所有人可见）</div>';
+    if (!sh.length) html+='<button type="button" class="ctx-item" disabled><span>还没有团队视图</span></button>';
+    sh.forEach(function (v) {
+      html+='<button type="button" class="ctx-item" data-sv="' + v.id + '"><span>' + esc(v.name) + '</span>'
+        + '<span class="ctx-sub">' + esc(v.owner || '') + '</span>'
+        + (((v.mine || ((window.ME || {}).role === 'admin'))) ? '<span class="vw-del" data-sdel="' + v.id + '" title="删除团队视图">×</span>' : '')
+        + '</button>';
+    });
+    if (sv.can_share) html+='<button type="button" class="ctx-item" data-act="save-team"><span>保存当前条件为团队视图…</span></button>';
+  }
   html+='<div class="ctx-sep"></div><button type="button" class="ctx-item" data-act="save"><span>保存当前条件为视图…</span></button>';
   m.innerHTML=html;
+  if (!sv) ensureServerViews(state.tid).then(function(){ if ($('view-menu')) openViewMenu(); });
   document.body.appendChild(m);
   m.style.left=Math.max(8, Math.min(r.left, window.innerWidth-m.offsetWidth-8))+'px';
   m.style.top=Math.round(r.bottom+6)+'px';
@@ -3102,6 +3173,20 @@ function openViewMenu(){
   });
   m.querySelector('[data-act="default"]').onclick=function(){ closeViewMenu(); resetView(); };
   m.querySelector('[data-act="save"]').onclick=function(){ closeViewMenu(); saveCurrentView(); };
+  m.querySelectorAll('[data-sv]').forEach(function(it){
+    it.onclick=function(e){
+      if(e.target.closest('[data-sdel]')) return;
+      var sv2 = SRV_VIEWS[state.tid] || { views: [] };
+      var v = (sv2.views || []).find(function(x){ return String(x.id) === it.getAttribute('data-sv'); });
+      closeViewMenu();
+      if (v) applyServerView(v);
+    };
+  });
+  m.querySelectorAll('[data-sdel]').forEach(function(x){
+    x.onclick=function(e){ e.stopPropagation(); deleteServerView(x.getAttribute('data-sdel')); };
+  });
+  var st = m.querySelector('[data-act="save-team"]');
+  if (st) st.onclick=function(){ closeViewMenu(); saveTeamView(); };
 }
 document.addEventListener('click', function(e){
   var m=$('view-menu');
@@ -3315,6 +3400,7 @@ function drawGridWindow(force) {
   for (var i = start; i < end; i++) html += gridRowHtml(GRID.d.rows[i], i, GRID.cols, GRID.canEdit);
   if (end < total) html += '<tr class="vsp"><td colspan="' + colspan + '" style="height:' + ((total - end) * rowH) + 'px"></td></tr>';
   $('tbody').innerHTML = html;
+  paintSel();
 }
 function onGridScroll() {
   hideRowInsert();
@@ -3342,6 +3428,30 @@ function revealRow(rid) {
   return true;
 }
 function initGridEvents() {
+  /* 拖选：按住左键从一格拖到另一格；Shift+单击从锚点扩展 */
+  var tb = $('tbody');
+  if (tb) {
+    tb.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      if (e.target.closest('button') || e.target.closest('a')) return;
+      var td = e.target.closest('td[data-f]');
+      if (!td || !GRID) return;
+      SEL_DRAG = true;
+      selectCell(td, e.shiftKey);
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!SEL_DRAG || !SEL) return;
+      var el = document.elementFromPoint(e.clientX, e.clientY);
+      var td = el && el.closest && el.closest('#tbody td[data-f]');
+      if (!td) return;
+      var rc = cellRC(td); if (!rc) return;
+      if (SEL.rid1 !== rc.rid || SEL.key1 !== rc.key) {
+        SEL.rid1 = rc.rid; SEL.key1 = rc.key; paintSel();
+      }
+    });
+    document.addEventListener('mouseup', function () { SEL_DRAG = false; });
+  }
   var wrap = document.querySelector('.tbl-wrap');
   if (wrap) wrap.addEventListener('scroll', onGridScroll, { passive: true });
   window.addEventListener('resize', function () {
@@ -3354,19 +3464,27 @@ function initGridEvents() {
    Enter / F2 进入编辑；直接打字就用这个字开始改；
    ← → 左右移动；Esc 取消选中。Tab 在编辑框里是“提交并跳到右边一格”。 */
 document.addEventListener('keydown', function (e) {
-  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.isComposing || e.key === 'Process') return;
+  if (e.defaultPrevented || e.isComposing || e.key === 'Process') return;
   var el = document.activeElement, tag = el && el.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || tag === 'A'
       || (el && el.isContentEditable)) return;          // 焦点在控件上时交给控件自己
   if (!$('table-view') || !$('table-view').classList.contains('on')) return;
   if ($('mask') || openFilter || document.querySelector('.cell-pop')) return;   // 弹窗/浮层打开时让它们处理键盘
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'c' || e.key === 'C')) {
+    if (copySelection()) e.preventDefault();
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
   var sel = document.querySelector('#tbody td.cell-sel');
   if (!sel || !sel.isConnected) return;
   if (e.key === 'Enter' || e.key === 'F2') { e.preventDefault(); openEdit(sel); return; }
   if (e.key === 'Escape') { clearCellSel(); return; }
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-    var nb = cellNeighbor(sel, e.key === 'ArrowRight' ? 1 : -1);
-    if (nb) { e.preventDefault(); selectCell(nb); nb.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+  if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); clearSelectionCells(); return; }
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    var dr = e.key === 'ArrowDown' ? 1 : e.key === 'ArrowUp' ? -1 : 0;
+    var dc = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+    moveSel(dr, dc, e.shiftKey);
     return;
   }
   if (e.key.length === 1 && e.key !== ' ') {
@@ -3384,6 +3502,7 @@ function renderRows(d) {
   var cols = curCols();
   var canEdit = canEditRows();
   GRID = { d: d, cols: cols, canEdit: canEdit, rowH: gridRowH(), start: -1, end: -1 };
+  ensureServerViews(state.tid);          // 团队视图：打开表时预取，视图菜单里直接可用
   drawGridWindow(true);
   var emptyEl = $('empty');
   if (d.total) { emptyEl.style.display = 'none'; }
@@ -3779,7 +3898,7 @@ function initTbodyEvents() {
         openEdit(td);
         return;
       }
-      selectCell(td);
+      selectCell(td, e.shiftKey);
     }
   });
   tb.addEventListener('dblclick', function (e) {
@@ -3815,10 +3934,22 @@ function clearCellSel(){
     var b=td.querySelector('.cell-expand'); if(b) b.remove();
     var cb=td.querySelector('.cell-cmt'); if(cb) cb.remove();
   });
+  document.querySelectorAll('#tbody td.in-sel, #tbody td.fill-target').forEach(function(td){
+    td.classList.remove('in-sel'); td.classList.remove('fill-target');
+  });
+  SEL = null; SEL_DRAG = false; FILL = null;
+  hideFillHandle();
 }
-function selectCell(td){
-  if(td.classList.contains('cell-sel')) return;
-  clearCellSel();
+function selectCell(td, extend){
+  var rc = cellRC(td);
+  if (!rc) return;
+  if (extend && SEL) { SEL.rid1 = rc.rid; SEL.key1 = rc.key; }
+  else { SEL = { rid0: rc.rid, key0: rc.key, rid1: rc.rid, key1: rc.key }; }
+  document.querySelectorAll('#tbody td.cell-sel').forEach(function(x){
+    x.classList.remove('cell-sel');
+    var b=x.querySelector('.cell-expand'); if(b) b.remove();
+    var cb=x.querySelector('.cell-cmt'); if(cb) cb.remove();
+  });
   td.classList.add('cell-sel');
   var btn=document.createElement('button');
   btn.className='cell-expand';
@@ -3832,6 +3963,219 @@ function selectCell(td){
   cmt.innerHTML='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3v-6.5A8 8 0 0 1 11 4h2a8 8 0 0 1 8 8z"/></svg>';
   cmt.onclick=function(e){ e.stopPropagation(); openCellComments(+td.closest('tr').getAttribute('data-rid'), td.getAttribute('data-f'), td); };
   td.appendChild(cmt);
+  paintSel();
+}
+
+/* ==================== 区域选择（拖选 / Shift / 方向键）、批量清空、复制、填充柄 ====================
+   选区只记“行 id + 列 key”，跟渲染窗口无关：滚动、翻页、别人改数据都不会错位。 */
+var SEL = null, SEL_DRAG = false, FILL = null, FILL_DRAG = false;
+function cellRC(td){
+  if (!td || !GRID) return null;
+  var tr = td.closest('tr[data-rid]'); if (!tr) return null;
+  var rid = +tr.getAttribute('data-rid'), ri = gridRowIndex(rid);
+  var key = td.getAttribute('data-f'), ci = -1;
+  GRID.cols.forEach(function (c, i) { if (c.key === key) ci = i; });
+  if (ri < 0 || ci < 0) return null;
+  return { ri: ri, ci: ci, rid: rid, key: key };
+}
+function selRange(){
+  if (!SEL || !GRID) return null;
+  var rm = {}, cm = {};
+  GRID.d.rows.forEach(function (r, i) { rm[r.id] = i; });
+  GRID.cols.forEach(function (c, i) { cm[c.key] = i; });
+  var r0 = rm[SEL.rid0], r1 = rm[SEL.rid1], c0 = cm[SEL.key0], c1 = cm[SEL.key1];
+  if (r0 === undefined || r1 === undefined || c0 === undefined || c1 === undefined) return null;
+  return { r0: Math.min(r0, r1), r1: Math.max(r0, r1), c0: Math.min(c0, c1), c1: Math.max(c0, c1),
+           ar: r0, ac: c0 };
+}
+function paintSel(){
+  var tb = $('tbody'); if (!tb) return;
+  tb.querySelectorAll('td.in-sel').forEach(function (t) { t.classList.remove('in-sel'); });
+  var s = selRange();
+  if (!s) { hideFillHandle(); return; }
+  var rm = {}, cm = {};
+  GRID.d.rows.forEach(function (r, i) { rm[r.id] = i; });
+  GRID.cols.forEach(function (c, i) { cm[c.key] = i; });
+  Array.prototype.forEach.call(tb.querySelectorAll('tr[data-rid]'), function (tr) {
+    var ri = rm[+tr.getAttribute('data-rid')];
+    if (ri === undefined || ri < s.r0 || ri > s.r1) return;
+    Array.prototype.forEach.call(tr.querySelectorAll('td[data-f]'), function (td) {
+      var ci = cm[td.getAttribute('data-f')];
+      if (ci !== undefined && ci >= s.c0 && ci <= s.c1) td.classList.add('in-sel');
+    });
+  });
+  positionFillHandle(s);
+}
+function hideFillHandle(){ var h = $('fill-handle'); if (h) h.style.display = 'none'; }
+function positionFillHandle(s){
+  var tb = $('tbody'); if (!tb) return;
+  var endKey = GRID.cols[s.c1].key, endCell = null;
+  Array.prototype.forEach.call(tb.querySelectorAll('td[data-f]'), function (td) {
+    if (td.getAttribute('data-f') !== endKey) return;
+    var ri = gridRowIndex(+td.closest('tr').getAttribute('data-rid'));
+    if (ri === s.r1) endCell = td;
+  });
+  var h = $('fill-handle');
+  if (!h) {
+    h = document.createElement('div'); h.id = 'fill-handle';
+    h.title = '向下拖动填充（重复选区的第一行）';
+    h.addEventListener('mousedown', beginFillDrag);
+    document.body.appendChild(h);
+  }
+  if (!endCell || !GRID.canEdit) { h.style.display = 'none'; return; }   // 只读账号不显示填充柄
+  var r = endCell.getBoundingClientRect();
+  h.style.display = 'block';
+  h.style.left = Math.round(r.right - 5) + 'px';
+  h.style.top = Math.round(r.bottom - 5) + 'px';
+}
+function moveSel(dr, dc, extend){
+  var s = selRange(); if (!s) return;
+  var ar = extend ? s.r1 : s.r0, ac = extend ? s.c1 : s.c0;
+  var nr = Math.max(0, Math.min(GRID.d.rows.length - 1, ar + dr));
+  var nc = Math.max(0, Math.min(GRID.cols.length - 1, ac + dc));
+  var row = GRID.d.rows[nr]; if (!row) return;
+  var key = GRID.cols[nc].key;
+  if (extend) { SEL.rid1 = row.id; SEL.key1 = key; }
+  else { SEL = { rid0: row.id, key0: key, rid1: row.id, key1: key }; }
+  revealRow(row.id);
+  paintSel();
+  var tb = $('tbody'), hit = null;
+  Array.prototype.forEach.call(tb ? tb.querySelectorAll('td[data-f]') : [], function (td) {
+    if (td.getAttribute('data-f') === key && +td.closest('tr').getAttribute('data-rid') === row.id) hit = td;
+  });
+  if (hit) { document.querySelectorAll('#tbody td.cell-sel').forEach(function (x) { x.classList.remove('cell-sel'); }); hit.classList.add('cell-sel'); }
+}
+/* 批量写：一次请求改多行 / 补建缺少的行。某几行冲突或值不合法只影响那几行。 */
+function bulkRows(items){
+  /* 接口一次最多 500 行：多的自动分批发（粘贴几千行也不会被拦） */
+  var out = { updated: 0, created: [], conflicts: [], errors: [] };
+  var CH = 500;
+  var chain = Promise.resolve(out);
+  for (var i = 0; i < items.length; i += CH) {
+    (function (off, part) {
+      chain = chain.then(function (acc) {
+        return api('/api/tables/' + state.tid + '/rows/bulk', 'POST', { rows: part }).then(function (r) {
+          acc.updated += (r.updated || 0);
+          acc.created = acc.created.concat(r.created || []);
+          (r.conflicts || []).forEach(function (x) { acc.conflicts.push(x); });
+          (r.errors || []).forEach(function (x) { x.index = (x.index || 0) + off; acc.errors.push(x); });
+          return acc;
+        });
+      });
+    })(i, items.slice(i, i + CH));
+  }
+  return chain;
+}
+async function fillRange(s, valueFn){
+  if (!canEditRows()) { toast('只读权限，不能修改'); return 0; }
+  var items = [], cells = [], n = 0;
+  for (var ri = s.r0; ri <= s.r1; ri++) {
+    var row = GRID.d.rows[ri]; if (!row) continue;
+    var data = {};
+    for (var ci = s.c0; ci <= s.c1; ci++) {
+      var c = GRID.cols[ci];
+      if (!c || c.type === 'formula' || c.type === 'image') continue;
+      var v = valueFn(ri, ci);
+      if (v === undefined) continue;
+      var old = (row.data || {})[c.key];
+      if (sameVal(old, v)) continue;
+      data[c.key] = v;
+      cells.push({ rid: row.id, key: c.key, old: old === undefined ? null : old, new: v });
+      n++;
+    }
+    if (Object.keys(data).length) items.push({ id: row.id, ver: row.ver, data: data });
+  }
+  if (!items.length) { toast('没有需要改动的格子'); return 0; }
+  showBusy('正在写入 ' + n + ' 格…');
+  try {
+    var r = await bulkRows(items);
+    if (cells.length) undoPush({ tid: state.tid, label: '批量修改 ' + cells.length + ' 格', cells: cells });
+    await loadRows();
+    var bad = (r.conflicts || []).length + (r.errors || []).length;
+    toast('已写入 ' + n + ' 格' + (bad ? '，' + bad + ' 行没成功（可能别人刚改过）' : ''));
+    return n;
+  } catch (e) { toast('写入失败：' + e.message); return -1; }
+  finally { hideBusy(); }
+}
+function clearSelectionCells(){
+  var s = selRange(); if (!s) return;
+  fillRange(s, function () { return null; });
+}
+function fillSelectionWithValue(s, v){
+  return fillRange(s, function () { return v; });
+}
+function copySelection(){
+  var s = selRange(); if (!s) return false;
+  var lines = [];
+  for (var ri = s.r0; ri <= s.r1; ri++) {
+    var row = GRID.d.rows[ri], cells = [];
+    for (var ci = s.c0; ci <= s.c1; ci++) {
+      var v = (row.data || {})[GRID.cols[ci].key];
+      if (Array.isArray(v)) v = v.join(',');
+      else if (v === null || v === undefined) v = '';
+      cells.push(String(v).replace(/[\t\r\n]+/g, ' '));
+    }
+    lines.push(cells.join('\t'));
+  }
+  var text = lines.join('\n'), n = (s.r1 - s.r0 + 1) * (s.c1 - s.c0 + 1);
+  var done = function () { toast('已复制 ' + n + ' 格'); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(function () { legacyCopyText(text); done(); });
+  } else { legacyCopyText(text); done(); }
+  return true;
+}function legacyCopyText(text){
+  var ta = document.createElement('textarea');
+  ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px'; ta.style.top = '0';
+  document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  ta.remove();
+}
+function beginFillDrag(e){
+  e.preventDefault(); e.stopPropagation();
+  var s = selRange(); if (!s || !GRID) return;
+  FILL = { s: s, to: s.r1 }; FILL_DRAG = true;
+  document.body.classList.add('filling');
+  document.addEventListener('mousemove', onFillMove);
+  document.addEventListener('mouseup', endFillDrag, { once: true });
+}
+function onFillMove(e){
+  if (!FILL_DRAG || !FILL || !GRID) return;
+  var wrap = document.querySelector('.tbl-wrap'); if (!wrap) return;
+  var r = wrap.getBoundingClientRect();
+  var y = e.clientY - r.top + wrap.scrollTop;
+  var ri = Math.max(0, Math.min(GRID.d.rows.length - 1, Math.floor(y / GRID.rowH)));
+  FILL.to = Math.max(FILL.s.r1, ri);
+  paintFillPreview();
+}
+function paintFillPreview(){
+  var tb = $('tbody'); if (!tb || !FILL) return;
+  tb.querySelectorAll('td.fill-target').forEach(function (t) { t.classList.remove('fill-target'); });
+  var s = FILL.s, rm = {};
+  GRID.d.rows.forEach(function (r, i) { rm[r.id] = i; });
+  var cm = {}; GRID.cols.forEach(function (c, i) { cm[c.key] = i; });
+  Array.prototype.forEach.call(tb.querySelectorAll('tr[data-rid]'), function (tr) {
+    var ri = rm[+tr.getAttribute('data-rid')];
+    if (ri === undefined || ri <= s.r1 || ri > FILL.to) return;
+    Array.prototype.forEach.call(tr.querySelectorAll('td[data-f]'), function (td) {
+      var ci = cm[td.getAttribute('data-f')];
+      if (ci !== undefined && ci >= s.c0 && ci <= s.c1) td.classList.add('fill-target');
+    });
+  });
+}
+function endFillDrag(){
+  document.removeEventListener('mousemove', onFillMove);
+  FILL_DRAG = false; document.body.classList.remove('filling');
+  var s = FILL && FILL.s, to = FILL && FILL.to;
+  FILL = null;
+  document.querySelectorAll('#tbody td.fill-target').forEach(function (t) { t.classList.remove('fill-target'); });
+  if (!s || to <= s.r1) return;
+  var h = s.r1 - s.r0 + 1;
+  fillRange({ r0: s.r1 + 1, r1: Math.min(to, GRID.d.rows.length - 1), c0: s.c0, c1: s.c1 },
+    function (ri, ci) {
+      var src = GRID.d.rows[s.r0 + ((ri - s.r0) % h)];
+      var v = (src.data || {})[GRID.cols[ci].key];
+      return v === undefined ? null : v;
+    });
 }
 
 /* ---------- 图片编辑：上传 / 粘贴 / 拖入 / 外链 ---------- */
@@ -4222,53 +4566,62 @@ document.addEventListener('keydown', function (e) {
    一行发一个 PATCH（带乐观锁），最后整体刷新并按格数汇报。整片粘贴在撤销栈里算一条。 */
 function pasteMatrix(td, text) {
   if (!canEditRows()) { toast('只读权限，不能粘贴'); return; }
-  var rows = String(text).replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map(function (l) { return l.split('\t'); });
-  if (!rows.length || !GRID) { toast('没有可粘贴的内容'); return; }
-  var cols = curCols().filter(function (c) { return c.type !== 'formula' && c.type !== 'image'; });
+  if (!GRID) return;
+  var m = String(text).replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map(function (l) { return l.split('\t'); });
+  if (!m.length || !m[0]) { toast('没有可粘贴的内容'); return; }
+  var cols = GRID.cols.filter(function (c) { return c.type !== 'formula' && c.type !== 'image'; });
   var startKey = td.getAttribute('data-f'), startCol = -1;
-  for (var i = 0; i < cols.length; i++) if (cols[i].key === startKey) { startCol = i; break; }
+  cols.forEach(function (c, i) { if (c.key === startKey) startCol = i; });
   if (startCol < 0) { toast('请先点一个可编辑的单元格（公式列不能粘贴）'); return; }
-  var rid = +td.closest('tr').getAttribute('data-rid'), startRow = -1;
-  for (var r = 0; r < GRID.d.rows.length; r++) if (GRID.d.rows[r].id === rid) { startRow = r; break; }
+  var startRow = gridRowIndex(+td.closest('tr').getAttribute('data-rid'));
   if (startRow < 0) { toast('这一行不在当前页'); return; }
-  var nCol = 0; rows.forEach(function (x) { nCol = Math.max(nCol, x.length); });
-  var nRow = Math.min(rows.length, GRID.d.rows.length - startRow);
-  nCol = Math.min(nCol, cols.length - startCol);
-  if (nRow < 1 || nCol < 1) { toast('没有可粘贴的位置'); return; }
-  var tasks = [], cells = [], skipped = 0;
-  for (var y = 0; y < nRow; y++) {
-    var row = GRID.d.rows[startRow + y], data = {}, n = 0;
-    for (var x = 0; x < nCol; x++) {
-      if (rows[y][x] === undefined) continue;
-      var c = cols[startCol + x], v = String(rows[y][x]);
-      var oldV = (row.data || {})[c.key];
-      var nv = v === '' ? null : v;
-      if (sameVal(oldV, nv)) { skipped++; continue; }
-      data[c.key] = nv; n++;
-      cells.push({ rid: row.id, key: c.key, old: oldV === undefined ? null : oldV, new: nv });
-    }
-    if (n) tasks.push({ rid: row.id, ver: row.ver, data: data, n: n });
+  var s = selRange();
+  // 只复制了一个值、却选了一片：铺满选区（和 Excel 一样）
+  if (m.length === 1 && m[0].length === 1 && s && (s.r1 > s.r0 || s.c1 > s.c0)) {
+    fillSelectionWithValue(s, m[0][0] === '' ? null : m[0][0]);
+    return;
   }
-  var extra = rows.length - nRow;
-  if (!tasks.length) { toast(skipped ? '粘贴的内容和现有数据一样，没有改动' : '没有可粘贴的内容'); return; }
-  showBusy('正在粘贴 ' + tasks.length + ' 行…');
-  (async function () {
-    var ok = 0, fail = 0, lastErr = '', okCells = [];
-    for (var t = 0; t < tasks.length; t++) {
-      var task = tasks[t];
-      try {
-        await api('/api/tables/' + state.tid + '/rows/' + task.rid, 'PATCH', { data: task.data, ver: task.ver });
-        ok += task.n;
-        cells.forEach(function (c) { if (c.rid === task.rid) okCells.push(c); });
-      } catch (e) { fail += task.n; lastErr = e.message; }
+  var nCol = 0; m.forEach(function (x) { nCol = Math.max(nCol, x.length); });
+  nCol = Math.min(nCol, cols.length - startCol);
+  if (nCol < 1) { toast('右边没有可粘贴的列'); return; }
+  var items = [], cells = [], n = 0, made = 0;
+  for (var y = 0; y < m.length; y++) {
+    var row = GRID.d.rows[startRow + y], data = {};
+    for (var x = 0; x < nCol; x++) {
+      if (m[y][x] === undefined) continue;
+      var c = cols[startCol + x], v = String(m[y][x]);
+      data[c.key] = v === '' ? null : v;
     }
+    if (!Object.keys(data).length) continue;
+    if (row) {
+      var changed = {};
+      for (var k in data) {
+        var old = (row.data || {})[k];
+        if (sameVal(old, data[k])) continue;
+        changed[k] = data[k];
+        cells.push({ rid: row.id, key: k, old: old === undefined ? null : old, new: data[k] });
+        n++;
+      }
+      if (Object.keys(changed).length) items.push({ id: row.id, ver: row.ver, data: changed });
+    } else {
+      items.push({ data: data });            // 当前页没有这一行：在表尾新建
+      n += Object.keys(data).length; made++;
+    }
+  }
+  if (!items.length) { toast('粘贴的内容和现有数据一样，没有改动'); return; }
+  showBusy('正在粘贴 ' + n + ' 格…');
+  (async function () {
+    try {
+      var r = await bulkRows(items);
+      if (cells.length) undoPush({ tid: state.tid, label: '粘贴 ' + cells.length + ' 格', cells: cells });
+      await loadRows();
+      var bad = (r.conflicts || []).length + (r.errors || []).length;
+      var msg = '已粘贴 ' + n + ' 格';
+      if (made) msg += '，新建 ' + made + ' 行';
+      if (bad) msg += '，' + bad + ' 行没成功（可能别人刚改过）';
+      toast(msg);
+    } catch (e) { toast('粘贴失败：' + e.message); }
     hideBusy();
-    if (okCells.length) undoPush({ tid: state.tid, label: '粘贴 ' + okCells.length + ' 格', cells: okCells });
-    try { await loadRows(); } catch (e) {}
-    var msg = '已粘贴 ' + ok + ' 格';
-    if (fail) msg += '，' + fail + ' 格没成功（' + lastErr + '）';
-    if (extra > 0) msg += '；超出当前页的 ' + extra + ' 行没有粘贴';
-    toast(msg);
   })();
 }
 document.addEventListener('paste', function (e) {
@@ -5061,7 +5414,7 @@ function buildDatePop(pop,k){
   draw();
 }
 if(!window.__outside){window.__outside=true;document.addEventListener('click',function(e){if(openFilter&&!e.target.closest('.f-pop')&&!e.target.closest('.th-f'))closeFilterPop();});
-document.addEventListener('click',function(e){ if(!e.target.closest('#tbody td.cell-sel')&&!e.target.closest('.cell-expand')&&!e.target.closest('#modal-root')) clearCellSel(); });
+document.addEventListener('click',function(e){ if(!e.target.closest('#tbody td.cell-sel')&&!e.target.closest('#tbody td.in-sel')&&!e.target.closest('.cell-expand')&&!e.target.closest('.cell-pop')&&!e.target.closest('#fill-handle')&&!e.target.closest('#modal-root')) clearCellSel(); });
 document.addEventListener('keydown',function(e){if(e.key==='Escape'&&openFilter)closeFilterPop();});}
 
 /* ============ 历史 / 新增行 / 导出 ============ */
@@ -5134,7 +5487,30 @@ $('btn-add-row').onclick = async function () {
     }
   } catch (e) { toast('新增失败：' + e.message); }
 };
-$('btn-csv').onclick=function(){window.open('/api/tables/'+state.tid+'/export','_blank');};
+function closeExportMenu(){ var m=$('export-menu'); if(m) m.remove(); }
+function openExportMenu(){
+  var b=$('btn-csv'); if(!b) return;
+  closeExportMenu();
+  var m=document.createElement('div'); m.className='ctx-menu view-menu'; m.id='export-menu';
+  m.innerHTML='<button type="button" class="ctx-item" data-fmt="csv"><span>导出 CSV</span></button>'
+    + '<button type="button" class="ctx-item" data-fmt="xlsx"><span>导出 Excel（.xlsx，含公式值、冻结表头）</span></button>';
+  document.body.appendChild(m);
+  var r=b.getBoundingClientRect();
+  m.style.left=Math.max(8, Math.min(r.left, window.innerWidth-m.offsetWidth-8))+'px';
+  m.style.top=Math.round(r.bottom+6)+'px';
+  m.querySelectorAll('[data-fmt]').forEach(function(it){
+    it.onclick=function(){
+      var fmt=it.getAttribute('data-fmt');
+      closeExportMenu();
+      window.open('/api/tables/'+state.tid+'/export'+(fmt==='xlsx'?'?fmt=xlsx':''),'_blank');
+    };
+  });
+}
+document.addEventListener('click', function(e){
+  var m=$('export-menu');
+  if(m && !e.target.closest('#export-menu') && !e.target.closest('#btn-csv')) closeExportMenu();
+}, true);
+$('btn-csv').onclick=openExportMenu;
 $('btn-apikey').onclick = openApiKeys;
 $('btn-sync').onclick = openSyncMgr;
 $('btn-hist').onclick=async function(){
@@ -6060,6 +6436,15 @@ function renderAnaChrome() {
     var el = $(id);
     if (el) el.style.display = ANA.canEdit ? '' : 'none';
   });
+  var pname = (curProject && curProject.name) || '';
+  var big = null;
+  (META.tables || []).forEach(function (t) { if ((t.count || 0) > 50000 && (!big || t.count > big.count)) big = t; });
+  var sub = $('ana-sub');
+  if (sub) {
+    sub.textContent = pname + (big ? ' · 「' + String(big.name).split('·').pop() + '」' + big.count + ' 行，整表加载会慢' : '');
+    sub.style.color = big ? '#b26a00' : '';
+    sub.title = big ? '单表超过 5 万行时，分析页会把整张表拉到浏览器里聚合；数据量大建议先汇总成小表再分析。' : '';
+  }
   $('ana-dash-rename').disabled = !ANA.currentId;
   $('ana-dash-del').disabled = !ANA.currentId;
   $('ana-add-chart').disabled = !ANA.canEdit;
