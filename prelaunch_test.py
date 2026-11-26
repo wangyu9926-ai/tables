@@ -560,8 +560,8 @@ r = admin.post('/api/tables', {'name': TAG + '混合公式', 'project': PRJ,
                                'columns': [{'label': '数量', 'type': 'number'},
                                            {'label': '混合', 'type': 'formula', 'expr': 'IF({数量}>0,{数量}*2,"—")'}]})
 _MT = j(r)['id']
-for _q in (1, None, 5):
-    admin.post(f'/api/tables/{_MT}/rows', {'data': {} if _q is None else {'数量': _q}})
+for _mixq in (1, None, 5):
+    admin.post(f'/api/tables/{_MT}/rows', {'data': {} if _mixq is None else {'数量': _mixq}})
 for _d in ('asc', 'desc'):
     r = admin.get(f'/api/tables/{_MT}/rows?size=0&sort=混合&dir={_d}')
     check(f'按公式列排序（数值与文本混排）{_d} 不 500', r.status_code == 200, f'{r.status_code} {r.text[:80]}')
