@@ -18,6 +18,7 @@ import pymysql
 from urllib.parse import quote
 
 from fastapi import FastAPI, Header, HTTPException, Request, UploadFile, File, Form
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -55,6 +56,18 @@ async def _db_input_out_of_range(request, exc):
     code = exc.args[0] if exc.args else ''
     print(f'[db] 输入超出允许范围（{code}）', flush=True)
     return JSONResponse({'detail': '内容过长或数值超出允许范围，请缩短后再试'}, status_code=400)
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(request, exc):
+    """请求体不符合接口要求：回 422 并说明是哪个字段。不用框架默认的处理，原因有两个：
+    它会把原始输入原样放进响应；输入里有 NaN / Infinity 这类不是合法 JSON 的数值时，
+    它自己会在生成响应时再抛异常，结果 500。"""
+    parts = []
+    for e in exc.errors()[:5]:
+        loc = ' → '.join(str(x) for x in e.get('loc', ())) or '请求体'
+        parts.append(f'{loc}：{e.get("msg", "")}')
+    return JSONResponse({'detail': '请求内容不符合接口要求（' + '；'.join(parts) + '）'}, status_code=422)
 
 
 def _check_len(value, limit, what):
