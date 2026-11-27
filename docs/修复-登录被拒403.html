@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>修复：登录提示「请求不是本站页面发起的」</title>
+<style>
+  :root{
+    --ink:#1b1f26; --ink2:#3d4553; --muted:#68717f; --line:#e4e8ef; --bg:#f5f7fb;
+    --card:#fff; --accent:#2f6bff; --accent-soft:#eef3ff; --ok:#0f766e; --ok-soft:#ecfdf5;
+    --warn:#b45309; --warn-soft:#fff8ed; --code-bg:#0f172a; --code-ink:#e6edf7;
+    --radius:14px; --shadow:0 1px 2px rgba(16,24,40,.04),0 10px 30px rgba(16,24,40,.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:16px/1.75 "PingFang SC","Microsoft YaHei","Segoe UI",system-ui,-apple-system,sans-serif}
+  .page{max-width:900px;margin:0 auto;padding:38px 22px 80px}
+  header.hero{background:linear-gradient(135deg,#7f1d1d,#b42318 60%,#f0553f 140%);color:#fff;
+       border-radius:20px;padding:34px 32px;box-shadow:var(--shadow)}
+  header.hero .k{font-size:12.5px;letter-spacing:.18em;opacity:.8}
+  header.hero h1{margin:10px 0 8px;font-size:27px;line-height:1.35}
+  header.hero p{margin:0;color:#ffe4de;font-size:14.5px;max-width:640px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:18px 0 6px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow)}
+  .card b{display:block;font-size:15px}
+  .card span{display:block;margin-top:3px;font-size:12.5px;color:var(--muted)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);
+      padding:26px 28px;margin:18px 0;box-shadow:var(--shadow)}
+  section h2{margin:0 0 4px;font-size:19px;display:flex;align-items:baseline;gap:10px}
+  section h2 .n{font-size:12px;font-weight:700;color:var(--accent);background:var(--accent-soft);
+      border-radius:999px;padding:2px 9px;letter-spacing:.05em}
+  section .lead{margin:0 0 14px;color:var(--muted);font-size:14px}
+  h3{font-size:15.5px;margin:20px 0 8px}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0 8px 20px;padding:0}
+  li{margin:5px 0}
+  code{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;background:#f2f4f8;
+      border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:13px}
+  pre{margin:10px 0;background:var(--code-bg);color:var(--code-ink);border-radius:12px;
+      padding:14px 16px;overflow:auto;font-size:13px;line-height:1.65}
+  pre code{background:none;border:none;color:inherit;padding:0;font-size:13px}
+  .tip,.warn{border-radius:12px;padding:12px 16px;margin:14px 0;font-size:14px;border:1px solid transparent}
+  .tip{background:var(--ok-soft);border-color:#c9efe7;color:#115e57}
+  .warn{background:var(--warn-soft);border-color:#fde2bd;color:#8a4b06}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{background:#f7f9fc;font-size:12.5px;color:var(--ink2);white-space:nowrap}
+  tbody tr:last-child td{border-bottom:none}
+  .flow{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;gap:10px;
+      font-size:13.5px;margin:14px 0}
+  .flow div{background:#f7f9fc;border:1px solid var(--line);border-radius:10px;padding:10px 12px;text-align:center}
+  .flow div.bad{border-color:#f5b5ad;background:#fff5f3;color:#8f2318}
+  .flow .arrow{color:var(--muted);font-size:18px}
+  .check{display:flex;gap:10px;align-items:flex-start;margin:8px 0;font-size:14.5px}
+  .check input{margin-top:6px;width:16px;height:16px}
+  footer{color:var(--muted);font-size:13px;text-align:center;margin-top:26px}
+  @media print{
+    :root{--bg:#fff;--shadow:none}
+    body{font-size:12pt;background:#fff}
+    .page{max-width:none;padding:0}
+    header.hero{border-radius:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    section{break-inside:auto;border:none;padding:0 0 6px;margin:0 0 14px}
+    pre{background:#f3f4f6;color:#111;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    section h2{break-after:avoid}
+  }
+  @media (max-width:720px){
+    .page{padding:18px 12px 50px}
+    header.hero{padding:26px 20px;border-radius:16px}
+    header.hero h1{font-size:22px}
+    section{padding:20px 16px}
+    .flow{grid-template-columns:1fr;gap:6px}
+    .flow .arrow{transform:rotate(90deg)}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="hero">
+    <div class="k">部署问题 · 修复文档</div>
+    <h1>登录提示「请求不是本站页面发起的，已拒绝」</h1>
+    <p>按顺序做：<b>第 0 步先让你能用</b> → 第 1 步查是哪种前端 → 第 2 步二选一修掉 → 第 3 步验证。全程约 10 分钟。</p>
+  </header>
+
+  <div class="cards">
+    <div class="card"><b>不是登录失败</b><span>账号密码没被校验，请求在门口就被挡了</span></div>
+    <div class="card"><b>应用是好的</b><span>同条件下换一种请求方式返回 401（正常）</span></div>
+    <div class="card"><b>原因一句话</b><span>代理把「地址」改了，应用认不出来是自己人</span></div>
+  </div>
+
+  <section>
+    <h2><span class="n">原理</span>为什么会有这道检查</h2>
+    <p>浏览器每次「写」操作会带一个「我从哪个页面来」的标记。应用要确认：这个请求确实是<b>我们自己的页面</b>发的，不是别的网站借你的登录状态偷偷发的（这叫 CSRF 防护）。</p>
+    <div class="flow">
+      <div>浏览器<br><small>页面在 http://data.sentuor.com</small></div>
+      <div class="arrow">→</div>
+      <div class="bad">代理 / 反向代理<br><small>转发时把地址改成 127.0.0.1:8614</small></div>
+      <div class="arrow">→</div>
+      <div class="bad">应用<br><small>看到的地址对不上 → 拒绝</small></div>
+    </div>
+    <p>所以只要让代理<b>把原始地址（Host 头）原样传进来</b>，或者临时放宽这道检查，就能登录。</p>
+  </section>
+
+  <section>
+    <h2><span class="n">第 0 步</span>先让你今天能干活（1 分钟，不用改任何配置）</h2>
+    <p>用<b>最新版 Chrome 或 Edge</b>打开同一个地址再登录。</p>
+    <div class="tip"><b>如果能登录</b>：说明应用完全正常，只是你之前用的浏览器内核比较老（不发送那个「来源标记」，应用就走了备用判断，而备用判断正好被代理改坏了）。先这样干活，下面的第 2 步修完，所有浏览器都能用。</div>
+    <div class="warn"><b>如果 Chrome 也报同样的红字</b>：直接跳到第 2 步的「情况 B」。</div>
+  </section>
+
+  <section>
+    <h2><span class="n">第 1 步</span>确认域名后面挂的是什么（一条命令）</h2>
+    <p>在 PowerShell 里执行（把域名换成你的，注意是 <code>http</code>）：</p>
+<pre><code>curl.exe -sI http://data.sentuor.com/login | Select-Object -First 8</code></pre>
+    <p>看输出里的 <code>Server:</code> 那一行：</p>
+    <table>
+      <thead><tr><th style="width:34%">看到的</th><th>说明 → 去修哪里</th></tr></thead>
+      <tbody>
+        <tr><td><code>Server: nginx</code></td><td>nginx 反向代理 → 第 2 步<b>情况 A</b></td></tr>
+        <tr><td><code>Server: Microsoft-IIS</code></td><td>IIS（可能带 ARR）→ 第 2 步<b>情况 A</b> 里的 IIS 段</td></tr>
+        <tr><td><code>Server: uvicorn</code> / <code>python</code></td><td>域名直接打到应用（没有反代）→ 第 2 步<b>情况 B</b></td></tr>
+        <tr><td>面板类（宝塔 / 1Panel / 花生壳 / frp）</td><td>面板的反向代理 / 内网穿透 → 第 2 步<b>情况 A</b> 对应段落</td></tr>
+      </tbody>
+    </table>
+    <p>拿不准就把这一行输出截图发我。</p>
+  </section>
+
+  <section>
+    <h2><span class="n">第 2 步</span>二选一修掉</h2>
+    <p class="lead">优先做 A（根治，所有人所有浏览器都能用）；A 改不了再做 B（临时放行）。</p>
+
+    <h3>情况 A：让代理把原始地址传进去（推荐）</h3>
+
+    <p><b>nginx</b>（Windows / Linux 相同）：找到域名对应的 <code>server</code> 块里的 <code>location /</code>，补上两行，别的不动：</p>
+<pre><code>location / {
+    proxy_pass http://127.0.0.1:8614;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;                # ← 这两行是关键
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}</code></pre>
+    <p>保存后：Linux <code>sudo nginx -t &amp;&amp; sudo systemctl reload nginx</code>；Windows <code>nginx.exe -t</code> 然后 <code>nginx.exe -s reload</code>。<b>应用不用重启。</b></p>
+
+    <p><b>IIS + ARR</b>：打开 IIS 管理器 → 点最上面的<b>服务器节点</b> → 中间找到 <code>Application Request Routing Cache</code> → 右侧 <code>Server Proxy Settings</code> → 勾上 <b>Preserve host header</b> → 应用。然后重启站点（或 <code>iisreset</code>）。</p>
+
+    <p><b>宝塔 / 1Panel 面板</b>：网站 → 你的站 → 反向代理 → 找到这条规则 → 「配置文件」里给 location 加上 <code>proxy_set_header Host $host;</code> 和 <code>proxy_set_header X-Forwarded-Host $host;</code> → 保存并重载。</p>
+
+    <p><b>frp / 花生壳 / 内网穿透</b>：这类最容易把地址换成 <code>127.0.0.1</code>。frp 用 <code>type = http</code> 时默认会透传，如果你配了 <code>host_header_rewrite</code> 就删掉；花生壳找「保留 Host / 透传 Host」开关。找不到就先用情况 B。</p>
+
+    <h3>情况 B：代理改不了，先临时放行（重启一次应用）</h3>
+    <p>给应用加一个环境变量 <code>GATE_ORIGIN_CHECK=0</code>，它只关掉「老浏览器没有来源标记时」的备用判断；现代浏览器的严格校验仍然生效，登录 Cookie 是 <code>SameSite=Lax</code>，别的站点发起的写请求本来就带不上 Cookie。</p>
+    <p><b>Linux（systemd）</b>：</p>
+<pre><code>sudo systemctl edit --full kb        # 在 [Service] 里加一行：
+Environment=GATE_ORIGIN_CHECK=0
+# 保存后：
+sudo systemctl daemon-reload &amp;&amp; sudo systemctl restart kb</code></pre>
+    <p><b>Windows（启动窗口 / .bat）</b>：在启动脚本里 <code>python auth_gate\run_gate.py</code> 那行<b>之前</b>加一行，然后关掉窗口重开：</p>
+<pre><code>set GATE_ORIGIN_CHECK=0</code></pre>
+    <div class="warn"><b>提醒</b>：这是临时方案。等代理能传 Host 了（情况 A），把这行删掉、重启一次，恢复完整校验。</div>
+  </section>
+
+  <section>
+    <h2><span class="n">第 3 步</span>验证（两条命令 + 一次登录）</h2>
+    <p>在 PowerShell 里执行，两条的输出都应该是 <b>401 或 400</b>（401 = 到了校验账号那一步，正常）：</p>
+<pre><code>$u = 'http://data.sentuor.com/__auth/login'
+$b = '{"username":"admin","password":"x"}'
+
+function Code($headers) {
+  try {
+    $r = Invoke-WebRequest -Uri $u -Method Post -ContentType 'application/json' `
+         -Body $b -UseBasicParsing -Headers $headers
+    [int]$r.StatusCode
+  } catch { [int]$_.Exception.Response.StatusCode }
+}
+
+# 现代浏览器走这条：期望 401
+Code @{ Origin = 'http://data.sentuor.com'; 'Sec-Fetch-Site' = 'same-origin' }
+
+# 老浏览器走这条：修好前是 403，修好后应该是 401
+Code @{ Origin = 'http://data.sentuor.com' }</code></pre>
+    <p>两条都返回 <code>401</code> → 修好了。然后浏览器 <b>Ctrl+F5 强刷</b>登录页（清掉缓存的旧页面），用真实账号密码登录。</p>
+    <div class="tip"><b>成功的样子</b>：不再出现红字，直接进项目首页（现在是空的，显示「还没有项目 / ＋ 新建项目」）。</div>
+  </section>
+
+  <section>
+    <h2><span class="n">还不行</span>把这 3 个信息发我</h2>
+    <ol>
+      <li>第 1 步那条命令的完整输出（<code>Server:</code> 那行）</li>
+      <li>第 3 步两条命令各自的返回码</li>
+      <li>你用的浏览器名字和版本（Chrome 里地址栏输入 <code>chrome://version</code> 第一行）</li>
+    </ol>
+    <p>有这三个我就能定位是「代理没传 Host」还是「浏览器发的来源标记不是同源」，各对应一套确定的改法。</p>
+  </section>
+
+  <section>
+    <h2><span class="n">顺便</span>两件安全事</h2>
+    <div class="warn">
+      <p style="margin-top:0"><b>1）现在是 http，密码是明文过网络的。</b>登录通了第一件事：右上角账号菜单 → 改密码。然后尽快上 HTTPS（正式证书 + 应用侧 <code>GATE_HTTPS=1</code>），把访问地址换成 <code>https://</code>。</p>
+      <p style="margin-bottom:0"><b>2）不要把 8614 端口对公网开放。</b>只让代理在本机访问它（应用监听 <code>127.0.0.1</code>），对外只开 80 / 443。</p>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="n">附录</span>这次为什么会突然出现</h2>
+    <p>本机直连时，浏览器地址就是 <code>127.0.0.1:8614</code>，应用看到的也是它，两边一致，所以从来不会触发。挂上域名 + 代理之后，浏览器看到的是 <code>data.sentuor.com</code>，而代理默认会把转发地址换成 <code>127.0.0.1:8614</code>——两边不一致，检查就拒绝了。<b>这也说明安全机制在正常工作，只是代理需要多传一个头。</b></p>
+    <p>同样的道理，以后换服务器、换域名、加 CDN / WAF，只要是「前面多了一层转发」，都检查这三件事：<b>Host 传了没、X-Forwarded-Proto 传了没、SSE 有没有被缓冲</b>（实时刷新依赖它）。</p>
+  </section>
+
+  <footer>本次修复文档对应版本：schema_version 2026.11.26-1 · 需要时把本页打印或转给运维同学</footer>
+</div>
+</body>
+</html>
