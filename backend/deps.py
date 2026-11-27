@@ -701,7 +701,10 @@ def _imp_login():
         raise HTTPException(401, '游客仅可查看项目列表，登录后使用导入：/login')
 
 def _imp_pd():
-    import pandas as pd
+    try:
+        import pandas as pd
+    except ImportError:          # 服务器漏装依赖时给一句人话，别让用户看到 500
+        raise HTTPException(503, '服务器缺少 pandas，Excel/CSV 导入不可用（pip install -r requirements.txt）')
     return pd
 
 def _imp_blank(v):

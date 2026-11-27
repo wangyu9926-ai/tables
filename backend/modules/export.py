@@ -13,9 +13,12 @@ def export_table(tid: int, fmt: str = ''):
     cols = columns(tid)
     project = t.get('project') or ''
     if fmt == 'xlsx':
-        from openpyxl import Workbook
-        from openpyxl.styles import Font, Alignment, PatternFill
-        from openpyxl.utils import get_column_letter
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, Alignment, PatternFill
+            from openpyxl.utils import get_column_letter
+        except ImportError:
+            raise HTTPException(503, '服务器缺少 openpyxl，Excel 导出不可用（pip install -r requirements.txt）')
         wb = Workbook()
         ws = wb.active
         ws.title = ((t['name'].split('·')[1] if '·' in t['name'] else t['name']) or 'Sheet1')[:31]

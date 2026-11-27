@@ -162,6 +162,7 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
 |---|---|
 | 双击 `启动看板-带登录.bat` 窗口一闪就关，或报 `'xxx' 不是内部或外部命令` | `.bat` 必须是 **GBK + CRLF**（仓库带了 `.gitattributes`，别用编辑器另存成 UTF-8/LF）。临时排查：在窗口里手动跑 `python auth_gate/run_gate.py` 看报错 |
 | `ModuleNotFoundError: No module named 'fastapi'`（或 pandas / pymysql 等） | 没装依赖：在项目目录执行 `pip install -r requirements.txt` |
+| 导入或导出 Excel 时提示 503「服务器缺少 pandas / openpyxl」 | 依赖没装全（这两个只在导入导出时才用到）：`pip install -r requirements.txt`，然后重启一次服务 |
 | `TypeError: unsupported operand type(s) for \|: 'type' and 'NoneType'` | Python 版本太低：需要 **3.10+**（推荐 3.11），用 `python --version` 确认 |
 | `[gate] 端口 8614 绑定失败` | 已有一个实例在跑：`netstat -ano \| findstr :8614` 找 PID 结束它；或换端口 `set GATE_PORT=8615` 再启动 |
 | 启动时一直问数据库 / 连不上 | 云数据库要把当前出口 IP 加进白名单；内网库确认地址端口；口令错会提示重填。想跳过向导就直接配环境变量 `MUMA_DB_*` |
@@ -577,8 +578,7 @@ tools/               备份 / 软删清理
   **位置放在这些路由原来注册的地方** —— FastAPI 按注册顺序匹配路径（`/api/tables/{tid}/rows/bulk` 必须排在
   `/rows/{rid}` 前面，否则会被当成 rid）。公共函数/缓存放 `deps.py`（它不导入 app.py，所以没有循环导入）。
 - **跨模块共享的可变状态必须放容器里**：`from backend.deps import *` 复制的是**绑定**，
-  裸标量在别的模块里只是导入那一刻的副本（拆分时踩过：`_META_GEN` 永远是 0，元信息缓存永不失效）。
-  现在用 `_META_VERS = {'gen':…, 'cnt':…}` 这种 dict。
+  裸标量在别的模块里只是导入那一刻的副本；运行时要改的状态一律放 dict/对象（例如 `_META_VERS = {'gen':…, 'cnt':…}`）。
 - **加前端功能**：放进对应的 `frontend/js/*.js`。函数都是全局的，跨文件可直接调用；新领域就新增一个文件，
   在 `index.html` 底部按依赖顺序加一行 `<script src="/static/js/xxx.js"></script>`（`?v=` 由服务端自动加）。
   **不要再往 `index.html` 里写内联脚本**：内容安全策略只放行同源文件 + 带哈希的内联块。
