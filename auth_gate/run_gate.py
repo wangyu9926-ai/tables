@@ -226,7 +226,7 @@ def _setup_db():
         pass
     host = _ask('数据库地址', os.environ.get('MUMA_DB_HOST') or cur.get('MUMA_DB_HOST') or 'localhost')
     port = _ask('端口', os.environ.get('MUMA_DB_PORT') or cur.get('MUMA_DB_PORT') or '3306')
-    user = _ask('用户名', os.environ.get('MUMA_DB_USER') or cur.get('MUMA_DB_USER') or 'root')
+    user = _ask('用户名', os.environ.get('MUMA_DB_USER') or cur.get('MUMA_DB_USER') or 'kb')
     name = _ask('库名', os.environ.get('MUMA_DB_NAME') or cur.get('MUMA_DB_NAME') or 'kb_tables')
     try:
         port_i = int(port)

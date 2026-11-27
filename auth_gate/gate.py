@@ -1198,19 +1198,9 @@ def ensure_admin_exists():
     pw = os.environ.get('GATE_ADMIN_PASSWORD') or secrets.token_urlsafe(9)
     ex("INSERT INTO kb_user(username,password_hash,real_name,role,status,created_by) "
        "VALUES(%s,%s,'管理员','admin',1,'gate-bootstrap')", (u, hash_password(pw)))
-    boot_file = GATE_DATA_DIR / 'admin_bootstrap.txt'
-    try:
-        GATE_DATA_DIR.mkdir(parents=True, exist_ok=True)
-        boot_file.write_text(
-            '引导管理员：%s / %s；仅首次创建时生成，请登录后尽快改密码' % (u, pw),
-            encoding='utf-8')
-        try:
-            os.chmod(boot_file, 0o600)          # 服务器上别的本地账号读不到（Windows 上忽略）
-        except OSError:
-            pass
-    except OSError:
-        pass
-    print(f'[gate] 已引导创建管理员：{u} / {pw}（也写在 {boot_file}）；登录后请改密码并删除该文件')
+    # 口令只在控制台出现这一次，不落盘：磁盘上的明文口令比"可能忘了密码"更危险。
+    # 无人值守部署请用 GATE_ADMIN_PASSWORD 自己指定（见 README「全新部署」）。
+    print(f'[gate] 已创建管理员：{u} / {pw} —— 这行只出现一次，请立即登录并修改密码')
     _seed_default_grants()
 
 

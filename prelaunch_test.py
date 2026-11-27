@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """上线前全量回归：默认打本机 https://127.0.0.1:8614（服务现在默认走 HTTPS、自签证书），
 地址可用环境变量 KB_TEST_BASE 改；全部走 __pretest__ 前缀的临时数据，退出前物理清理（中途异常也会清）。
+默认地址就是线上业务库：**默认拒绝运行**，确需对生产体检时显式加 KB_TEST_ALLOW_PROD=1。
 脚本要直连同一个数据库做清理，所以得在已配好数据库连接的项目目录里跑。"""
 import atexit
 import io
@@ -13,10 +14,23 @@ import warnings
 import requests
 
 sys.path.insert(0, '.')
-from auth_gate.gate import issue_token  # noqa: E402
-
 warnings.filterwarnings('ignore', message='Unverified HTTPS request')    # 本机自签证书
 BASE = os.environ.get('KB_TEST_BASE', 'https://127.0.0.1:8614')
+PROD_BASE = 'https://127.0.0.1:8614'
+CLEAN_ONLY = '--cleanup' in sys.argv
+
+# 默认地址就是线上业务库：脚本会往里写 __pretest__ 数据（退出时清理，但中途被强杀会留残留）。
+# 和 run.py 一样默认拒绝，确有必要才显式放行。
+if not CLEAN_ONLY and BASE.rstrip('/') == PROD_BASE and os.environ.get('KB_TEST_ALLOW_PROD') != '1':
+    print('拒绝运行：默认地址 %s 是线上业务库，回归会往里写 __pretest__ 临时数据。' % PROD_BASE)
+    print('  · 上线前对生产做体检：KB_TEST_ALLOW_PROD=1 python prelaunch_test.py')
+    print('  · 日常验证请指向临时实例：KB_TEST_BASE=http://127.0.0.1:8617 python prelaunch_test.py')
+    print('  · 清理上次残留：python prelaunch_test.py --cleanup')
+    sys.exit(2)
+
+# 放在拒绝逻辑之后：导入 gate 会连带加载应用，import 时就会跑 init_schema 连库
+from auth_gate.gate import issue_token  # noqa: E402
+
 TAG = '__pretest__'
 PASS, FAIL = 0, 0
 FAILS = []
@@ -62,6 +76,12 @@ _adm = _q0("SELECT id, username FROM kb_user WHERE role='admin' AND status=1 ORD
     or {'id': 1, 'username': 'admin'}
 ADM_UID = int(_adm['id'])
 admin = Api(issue_token(ADM_UID, _adm['username'], 'admin'))
+try:
+    from backend.db import config as _dbcfg
+    _c = _dbcfg()
+    print('目标：%s    数据库：%s:%s/%s' % (BASE, _c['host'], _c['port'], _c['database']))
+except Exception:
+    print('目标：%s' % BASE)
 STAFF_UID = None
 staff = Api()  # 稍后建临时用户再发 token
 guest = Api()
@@ -78,30 +98,35 @@ _CLEANED = []
 
 
 def cleanup():
-    """物理清掉全部 __pretest__ 数据。正常跑完调一次；中途异常时由 atexit 在退出前调。"""
+    """物理清掉全部 __pretest__ 数据。正常跑完调一次；中途异常/收到 SIGTERM 时也会调。
+    接口能连上就先走接口（顺带清缓存、写审计），连不上（服务没起、token 失效）就当过——
+    后面直连库的清理必须照常执行，这样才能清掉「跑一半被强杀」的残留。"""
     if _CLEANED:
         return
     _CLEANED.append(1)
     print('--- cleanup ---')
     try:
-        d = j(admin.get('/api/meta'))
-        _any = [t['id'] for t in d.get('tables', []) if t['name'].startswith(TAG)]
-        if _any:
-            # 审计是服务端后台批量写的：先让它把队列落盘，否则最后那批会在下面删完之后才进库，留下测试残留
-            admin.get(f'/api/tables/{_any[0]}/audit?limit=1')
-            time.sleep(0.6)
-        tids = [t['id'] for t in d.get('tables', []) if t['name'].startswith(TAG)]
-        for tid in tids:
-            admin.delete(f'/api/tables/{tid}')
-        for p in d.get('projects', []):
-            if p['name'].startswith(TAG):
-                admin.delete('/api/projects/' + requests.utils.quote(p['name']))
-        for db in j(admin.get('/api/dashboards?project=' + TAG)).get('dashboards', []):
-            admin.delete(f"/api/dashboards/{db['id']}")
-        us = j(admin.get('/__auth/users')).get('users', [])
-        for u in us:
-            if str(u['username']).startswith(TAG):
-                admin.delete(f"/__auth/users/{u['id']}")
+        try:
+            d = j(admin.get('/api/meta'))
+            _any = [t['id'] for t in d.get('tables', []) if t['name'].startswith(TAG)]
+            if _any:
+                # 审计是服务端后台批量写的：先让它把队列落盘，否则最后那批会在下面删完之后才进库，留下测试残留
+                admin.get(f'/api/tables/{_any[0]}/audit?limit=1')
+                time.sleep(0.6)
+            tids = [t['id'] for t in d.get('tables', []) if t['name'].startswith(TAG)]
+            for tid in tids:
+                admin.delete(f'/api/tables/{tid}')
+            for p in d.get('projects', []):
+                if p['name'].startswith(TAG):
+                    admin.delete('/api/projects/' + requests.utils.quote(p['name']))
+            for db in j(admin.get('/api/dashboards?project=' + TAG)).get('dashboards', []):
+                admin.delete(f"/api/dashboards/{db['id']}")
+            us = j(admin.get('/__auth/users')).get('users', [])
+            for u in us:
+                if str(u['username']).startswith(TAG):
+                    admin.delete(f"/__auth/users/{u['id']}")
+        except Exception as e:
+            print('接口清理跳过（服务没连上或凭证失效）：', e)
         # 上面这些接口删除自己也会写审计（delete_table 等），同样在服务端后台批量落盘：等它写完再删审计
         time.sleep(0.8)
         from backend.engine import ex, q
@@ -145,6 +170,26 @@ def cleanup():
 
 
 atexit.register(cleanup)
+
+# 强杀之外的退出（Ctrl+C / systemd stop / 关窗口给的 SIGTERM）也先把测试数据清掉
+import signal as _signal  # noqa: E402
+
+
+def _on_signal(signum, frame):
+    print('收到信号 %s：先清理测试数据再退出…' % signum)
+    cleanup()
+    sys.exit(128 + int(signum))
+
+
+for _sig in (_signal.SIGINT, _signal.SIGTERM):
+    try:
+        _signal.signal(_sig, _on_signal)
+    except Exception:
+        pass
+
+if CLEAN_ONLY:
+    cleanup()
+    sys.exit(0)
 
 
 # ==================== 1. 未登录 / 登录 ====================

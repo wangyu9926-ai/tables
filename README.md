@@ -47,6 +47,7 @@
    然后自动创建全部 `kb_*` 表、建好管理员并启动服务。**已经配好的部署完全跳过这一步**，不会打扰。
    后台/计划任务这类非交互启动不会等待输入：没有配置就打印环境变量清单后退出；
    也可以用 `GATE_ADMIN_PASSWORD` 预置管理员密码（仅在没有管理员时生效）。
+   没有管理员又没给 `GATE_ADMIN_PASSWORD` 时，会生成一个随机密码并**只在启动窗口打印一次**（不落盘），请立即登录改掉。
    无人值守部署：设 `GATE_SETUP_STDIN=1`，按提问顺序把答案逐行喂给标准输入 ——
    数据库地址、端口、用户名、库名、口令、（库不存在时）`y`、再输一次口令，然后是管理员账号、密码、再输一次密码。
    窗口里手填时请先切到**英文输入法**（中文输入法会吃掉字母和回车）。
@@ -162,6 +163,7 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
 |---|---|
 | 双击 `启动看板-带登录.bat` 窗口一闪就关，或报 `'xxx' 不是内部或外部命令` | `.bat` 必须是 **GBK + CRLF**（仓库带了 `.gitattributes`，别用编辑器另存成 UTF-8/LF）。临时排查：在窗口里手动跑 `python auth_gate/run_gate.py` 看报错 |
 | `ModuleNotFoundError: No module named 'fastapi'`（或 pandas / pymysql 等） | 没装依赖：在项目目录执行 `pip install -r requirements.txt` |
+| 回归脚本提示「拒绝运行：默认地址是线上业务库」 | 这是有意的：默认会往业务库写测试数据。日常验证用 `KB_TEST_BASE=http://127.0.0.1:8617` 指向临时实例；确需对生产体检加 `KB_TEST_ALLOW_PROD=1` |
 | 导入或导出 Excel 时提示 503「服务器缺少 pandas / openpyxl」 | 依赖没装全（这两个只在导入导出时才用到）：`pip install -r requirements.txt`，然后重启一次服务 |
 | `TypeError: unsupported operand type(s) for \|: 'type' and 'NoneType'` | Python 版本太低：需要 **3.10+**（推荐 3.11），用 `python --version` 确认 |
 | `[gate] 端口 8614 绑定失败` | 已有一个实例在跑：`netstat -ano \| findstr :8614` 找 PID 结束它；或换端口 `set GATE_PORT=8615` 再启动 |
@@ -195,6 +197,7 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
   请求体只解析 `application/json`（文本/表单类的跨源请求不需要预检就能发出去，一律不认）。
 - **请求体上限** 25MB（`GATE_MAX_BODY_MB`）；超出的导入直接拒绝。
 - **内容安全策略（CSP）**：不放开脚本的 `unsafe-inline`。登录页 / 用户管理页的内联脚本按 sha256 放行；主页面脚本全是同源外部文件（`script-src 'self'`）。页面里多出任何脚本都不会执行。
+  策略**不会自动降级**：万一页面里写了内联事件或 `javascript:` 链接，服务端只会在控制台报错、策略照旧严格（那个事件会被浏览器拦掉），  回归脚本会在三个页面上查这类写法；确实要临时放宽才设 `KB_CSP_UNSAFE_INLINE=1`。
   - ⚠️ **按钮事件必须写在脚本里**（`addEventListener` / `el.onclick = fn`），**不能写 `onclick="..."` 这种标签属性** ——
     那种写法会被策略拦掉，表现是「按钮点了没反应、页面也不报错」。回归里有专门用例检查三个页面。
   - 万一改出问题，`KB_CSP_UNSAFE_INLINE=1` 一键退回旧行为；引擎里也有兜底：检测到标签内联事件/`javascript:` 链接时，
@@ -587,7 +590,10 @@ tools/               备份 / 软删清理
 
 ## 上线前回归
 
-- `python prelaunch_test.py`（需服务已启动；默认打 `https://127.0.0.1:8614`，自签证书自动忽略校验，换地址用环境变量 `KB_TEST_BASE`）。
+- `python prelaunch_test.py`（需服务已启动；自签证书自动忽略校验；地址用环境变量 `KB_TEST_BASE` 指定）。
+  **默认地址 `https://127.0.0.1:8614` 就是线上业务库，脚本默认拒绝运行**（会往里写 `__pretest__` 临时数据，虽然退出时清理、中途被强杀仍可能留残留）。日常验证指向临时实例即可；确实要对生产做体检时显式放行：
+  `KB_TEST_ALLOW_PROD=1 python prelaunch_test.py`。上次跑一半被强杀、要清残留：`python prelaunch_test.py --cleanup`
+  （接口连不上也会继续直连库清理；Ctrl+C / SIGTERM 退出前同样会清理）。
   要在**已配好数据库连接**的项目目录里跑：脚本会直连同一个数据库做清理，管理员账号从库里取（首次部署时账号名是部署者自己定的）。
 - **365 项断言**，全部走 `__pretest__` 前缀的临时数据，退出前物理清理（中途异常也会清）。
 - 覆盖范围：

@@ -498,8 +498,10 @@ def csp_for_html(html=None):
         # 与其让按钮在用户手里点了没反应，不如这个页面退回旧行为，并在日志里喊出来。
         why = csp_inline_problem(text)
     if why:
-        print('[CSP] 警告：%s；这个页面退回 unsafe-inline（旧行为）' % why, file=sys.stderr, flush=True)
-        return _CSP_BASE % " 'unsafe-inline'"
+        # 不自动放宽：放宽之后注入的脚本也能执行，而且没人会注意到。
+        # 页面里别写内联事件（回归会在三个页面上检查）；确实需要时显式设 KB_CSP_UNSAFE_INLINE=1。
+        print('[CSP] 错误：%s；该页面仍按严格策略下发（浏览器会拦掉这些内联事件）' % why,
+              file=sys.stderr, flush=True)
     return _CSP_BASE % ((' ' + ' '.join(hashes)) if hashes else '')
 
 

@@ -22,7 +22,7 @@ _LOCAL_SECRETS = os.environ.get('MUMA_SECRETS_PATH') or os.path.join(
 DEFAULTS = {
     'MUMA_DB_HOST': 'localhost',
     'MUMA_DB_PORT': '3306',
-    'MUMA_DB_USER': 'root',
+    'MUMA_DB_USER': 'kb',
     'MUMA_DB_NAME': 'kb_tables',
     'MUMA_DB_CONNECT_TIMEOUT': '5',
     'MUMA_DB_READ_TIMEOUT': '20',
@@ -230,7 +230,7 @@ def conn():
         else:
             if time.monotonic() - since > IDLE_PING:
                 try:
-                    raw.ping(reconnect=True)
+                    raw.ping(reconnect=False)      # 断了就换一条新连接，不让库在事务中悄悄重连
                 except Exception:
                     try:
                         raw.close()
