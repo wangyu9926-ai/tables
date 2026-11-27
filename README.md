@@ -505,6 +505,9 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
 - 数字支持 `2万` / `1.2w` / `1.5亿` / 千分位；日期支持 `YYYY-MM-DD`；多选可传数组或逗号分隔文本。
 - 每次写入落一条 `api_insert` 变动历史，actor 为 `api:<密钥备注>`；密钥生成/作废也写审计。
 - 安全边界：密钥是**表级写凭证**，不是登录态；只能插入，不能读数据、不能改列结构；作废立即生效。
+- **批量灌 Excel：`tools/import_excel.py`**（同一个写入接口，带断行、失败隔离、幂等）：
+  `python tools/import_excel.py 数据.xlsx --tid 12 --token kbk_... [--sheet 名称] [--multi 标签] [--dates 日期] [--dry-run]`
+  表头要和列名一致；写错的列服务端会忽略，脚本会打印表头方便核对；失败行可用 `--fail-out 失败.csv` 导出。
 
 ## 数据导入 / 迁移
 
@@ -573,7 +576,7 @@ frontend/
   js/auth-menu.js   登录态、用户管理、右键菜单、拖动行
   js/analysis.js    数据分析（图表 / 看板）
   js/import-select.js Excel 导入、自定义下拉、日期选择器、手机端、startApp
-tools/               备份 / 软删清理
+tools/               备份 / 软删清理 / Excel 批量导入（import_excel.py）
 ```
 
 - **加后端功能**：新建 `backend/modules/xxx.py`（一个 `router = APIRouter()`，路由和请求体都放这个文件；
