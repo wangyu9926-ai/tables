@@ -52,6 +52,11 @@ _COOKIE_SECURE = os.environ.get('GATE_COOKIE_SECURE') == '1' or _GATE_HTTPS
 # 浏览器记住只走 HTTPS 之后，证书不受信任时就不给“继续前往”，没装信任证书的同事会被挡在门外。
 _HSTS = os.environ.get('GATE_HSTS') == '1' or _GATE_HTTPS
 _ORIGIN_CHECK = os.environ.get('GATE_ORIGIN_CHECK') != '0'      # 老浏览器没有 Sec-Fetch-Site 时的兜底
+# 明确允许的页面来源（逗号分隔，写成 https://域名 这种完整来源）。命中的请求直接放行——
+# 反向代理 / 内嵌浏览器可能把 Sec-Fetch-Site 标成 same-site，或把它丢掉，这时靠白名单兜住。
+_ALLOWED_ORIGINS = {x.strip().rstrip('/').lower()
+                    for x in (os.environ.get('GATE_ALLOWED_ORIGINS') or '').split(',')
+                    if x.strip()}
 _MAX_BODY = int(os.environ.get('GATE_MAX_BODY_MB', '25')) * 1024 * 1024   # 导入上限 20MB + 表单开销
 _ctx_user = contextvars.ContextVar('gate_current_user', default=None)
 # 登录态短缓存：key=(uid, username)，账号变更时同进程立即清空
@@ -656,28 +661,48 @@ async def _body(request) -> dict:
         return {}
 
 
-def _cross_site_write(request) -> bool:
-    """浏览器发出的写请求，如果不是本站页面发起的，就拒绝。
-    优先看 Sec-Fetch-Site（浏览器自己标的，页面改不了）：本站页面发起的是 same-origin；
-    同一个域名下的其它站点（比如同一个托管平台上的邻居站点）是 same-site —— Cookie 照带，必须挡。
-    老浏览器没有这个头时，退而比较 Origin 和本站地址。"""
+def _cross_site_reason(request):
+    """浏览器发出的写请求如果不是本站页面发起的，返回一句「为什么」（同时用于日志和 403 提示）；放行返回 None。
+
+    顺序：
+      1. Origin 在 GATE_ALLOWED_ORIGINS 白名单里 → 放行（代理改写 Sec-Fetch-Site / 内嵌浏览器时用）
+      2. 有 Sec-Fetch-Site：本站页面是 same-origin，直接打开/脚本是 none，其余（same-site / cross-site）一律拒绝
+      3. 没有这个头（老浏览器）：比较 Origin 与 Host / X-Forwarded-Host
+    """
+    origin = (request.headers.get('origin') or '').strip()
     sfs = (request.headers.get('sec-fetch-site') or '').strip().lower()
+    host = (request.headers.get('host') or '').strip()
+    xfh = (request.headers.get('x-forwarded-host') or '').strip()
+
+    def brief(v):
+        return (v[:90] + '…') if len(v) > 90 else v
+
+    if origin and _ALLOWED_ORIGINS and origin.rstrip('/').lower() in _ALLOWED_ORIGINS:
+        return None
     if sfs:
-        return sfs not in ('same-origin', 'none')
+        if sfs in ('same-origin', 'none'):
+            return None
+        return 'Sec-Fetch-Site=%s（Origin=%s，Host=%s）' % (sfs, brief(origin) or '空', brief(host) or '空')
     if not _ORIGIN_CHECK:
-        return False
-    origin = request.headers.get('origin')
+        return None
     if not origin:
-        return False                 # 不是浏览器发的（脚本 / RPA），没有这个头
+        return None                  # 不是浏览器发的（脚本 / RPA），没有这个头
     try:
         o = urlsplit(origin)
     except Exception:
-        return True
+        return 'Origin 解析失败（%s）' % brief(origin)
     if o.scheme not in ('http', 'https') or not o.netloc:
-        return True
-    hosts = {h.strip().lower() for h in (request.headers.get('host') or '').split(',') if h.strip()}
-    hosts.update(h.strip().lower() for h in (request.headers.get('x-forwarded-host') or '').split(',') if h.strip())
-    return o.netloc.lower() not in hosts
+        return 'Origin 不是 http(s) 地址（%s）' % brief(origin)
+    hosts = {h.strip().lower() for h in host.split(',') if h.strip()}
+    hosts.update(h.strip().lower() for h in xfh.split(',') if h.strip())
+    if o.netloc.lower() in hosts:
+        return None
+    return 'Origin=%s 与服务器看到的 Host=%s 不一致（X-Forwarded-Host=%s）' % (
+        brief(origin), brief(host) or '空', brief(xfh) or '空')
+
+
+def _cross_site_write(request) -> bool:
+    return _cross_site_reason(request) is not None
 
 
 def _current_user(request):
@@ -1127,8 +1152,11 @@ async def _gate_middleware(request, call_next):
         if cl.isdigit() and int(cl) > _MAX_BODY:
             return _resp_json({'detail': f'请求体不能超过 {_MAX_BODY // 1048576}MB'}, 413)
         # 免登录写入（凭表级 X-KB-Token，脚本 / RPA 调用，不带浏览器来源头）不参与来源校验
-        if not api_in and _cross_site_write(request):
-            return _resp_json({'detail': '请求不是本站页面发起的，已拒绝'}, 403)
+        if not api_in:
+            why = _cross_site_reason(request)
+            if why:
+                print(f'[gate] 拒绝跨站写请求 {method} {path}：{why}', flush=True)
+                return _resp_json({'detail': '请求不是本站页面发起的，已拒绝（' + why + '）'}, 403)
     if path == '/login' or path.startswith('/__auth'):
         return await _gate_async(request)
     if method == 'OPTIONS':

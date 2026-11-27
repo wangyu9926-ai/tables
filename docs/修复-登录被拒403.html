@@ -79,7 +79,7 @@
   <header class="hero">
     <div class="k">部署问题 · 修复文档</div>
     <h1>登录提示「请求不是本站页面发起的，已拒绝」</h1>
-    <p>按顺序做：<b>第 0 步先让你能用</b> → 第 1 步查是哪种前端 → 第 2 步二选一修掉 → 第 3 步验证。全程约 10 分钟。</p>
+    <p>按顺序做：<b>第 0 步先让你能用</b> → 第 1 步查是哪种前端 → 第 2 步三种修法选一个 → 第 3 步验证。全程约 10 分钟。</p>
   </header>
 
   <div class="cards">
@@ -127,7 +127,7 @@
 
   <section>
     <h2><span class="n">第 2 步</span>二选一修掉</h2>
-    <p class="lead">优先做 A（根治，所有人所有浏览器都能用）；A 改不了再做 B（临时放行）。</p>
+    <p class="lead">优先做 A（根治）；A 改不了就做 C（白名单，精确放行，不用重启代理）；只想先登录、别的都不动就做 B（临时关掉兜底）。</p>
 
     <h3>情况 A：让代理把原始地址传进去（推荐）</h3>
 
@@ -147,6 +147,17 @@
     <p><b>宝塔 / 1Panel 面板</b>：网站 → 你的站 → 反向代理 → 找到这条规则 → 「配置文件」里给 location 加上 <code>proxy_set_header Host $host;</code> 和 <code>proxy_set_header X-Forwarded-Host $host;</code> → 保存并重载。</p>
 
     <p><b>frp / 花生壳 / 内网穿透</b>：这类最容易把地址换成 <code>127.0.0.1</code>。frp 用 <code>type = http</code> 时默认会透传，如果你配了 <code>host_header_rewrite</code> 就删掉；花生壳找「保留 Host / 透传 Host」开关。找不到就先用情况 B。</p>
+
+    <h3>情况 C：给应用一个「允许的域名」白名单（精确放行，推荐给反向代理 / 内嵌浏览器场景）</h3>
+    <p>如果代理那边不好改，或者你的浏览器把「来源标记」标成了 <code>same-site</code>，最省事的是告诉应用：<b>来自这个域名的请求是可信的</b>。</p>
+<pre><code># 启动前设置（域名按你的写，是 http 就写 http）
+set GATE_ALLOWED_ORIGINS=http://data.sentuor.com
+
+# 多个用逗号分隔：
+# set GATE_ALLOWED_ORIGINS=http://data.sentuor.com,http://www.data.sentuor.com</code></pre>
+    <p>Linux（systemd）：在 <code>[Service]</code> 里加 <code>Environment=GATE_ALLOWED_ORIGINS=http://data.sentuor.com</code>，然后 <code>daemon-reload &amp;&amp; restart kb</code>。<br>
+    Windows（启动窗口 / .bat）：把上面那行 <code>set</code> 加在 <code>python auth_gate\run_gate.py</code> 之前，关掉窗口重开。</p>
+    <div class="tip"><b>安全性</b>：只有「页面来源等于你写的这个域名」的写请求才放行，别的站点照样被挡；比 B（完全关掉兜底）更精确。</div>
 
     <h3>情况 B：代理改不了，先临时放行（重启一次应用）</h3>
     <p>给应用加一个环境变量 <code>GATE_ORIGIN_CHECK=0</code>，它只关掉「老浏览器没有来源标记时」的备用判断；现代浏览器的严格校验仍然生效，登录 Cookie 是 <code>SameSite=Lax</code>，别的站点发起的写请求本来就带不上 Cookie。</p>
@@ -184,6 +195,15 @@ Code @{ Origin = 'http://data.sentuor.com' }</code></pre>
   </section>
 
   <section>
+    <h2><span class="n">说明</span>新版会把「为什么被拒」直接写在红字里</h2>
+    <p>从 <code>2026-11-27</code> 的版本起，这条 403 不再是一句笼统的话，后面会带上实际收到的值，例如：</p>
+<pre><code>请求不是本站页面发起的，已拒绝（Sec-Fetch-Site=cross-site（Origin=http://data.sentuor.com，Host=127.0.0.1:8614））
+请求不是本站页面发起的，已拒绝（Origin=http://data.sentuor.com 与服务器看到的 Host=127.0.0.1:8614 不一致（X-Forwarded-Host=空））</code></pre>
+    <p>看到第一句 → 浏览器标的来源不对，用<b>情况 C（白名单）</b>；看到第二句 → 代理没传 Host，用<b>情况 A</b>；服务端日志（<code>journalctl -u kb</code> / 启动窗口）里也会打一行 <code>[gate] 拒绝跨站写请求 …</code>。</p>
+    <div class="warn"><b>需要更新到这一版吗？</b>旧版只说「已拒绝」，没有原因。更新方法：用最新部署包覆盖 <code>auth_gate/gate.py</code> 一个文件，然后重启应用一次。</div>
+  </section>
+
+  <section>
     <h2><span class="n">还不行</span>把这 3 个信息发我</h2>
     <ol>
       <li>第 1 步那条命令的完整输出（<code>Server:</code> 那行）</li>
@@ -205,6 +225,7 @@ Code @{ Origin = 'http://data.sentuor.com' }</code></pre>
     <h2><span class="n">附录</span>这次为什么会突然出现</h2>
     <p>本机直连时，浏览器地址就是 <code>127.0.0.1:8614</code>，应用看到的也是它，两边一致，所以从来不会触发。挂上域名 + 代理之后，浏览器看到的是 <code>data.sentuor.com</code>，而代理默认会把转发地址换成 <code>127.0.0.1:8614</code>——两边不一致，检查就拒绝了。<b>这也说明安全机制在正常工作，只是代理需要多传一个头。</b></p>
     <p>同样的道理，以后换服务器、换域名、加 CDN / WAF，只要是「前面多了一层转发」，都检查这三件事：<b>Host 传了没、X-Forwarded-Proto 传了没、SSE 有没有被缓冲</b>（实时刷新依赖它）。</p>
+    <p><b>IIS 特别提示</b>：IIS 的 ARR 默认会把转发地址改成本机地址，所以用 IIS 做反代时，务必在 <code>Application Request Routing Cache → Server Proxy Settings</code> 里勾上 <b>Preserve host header</b>；否则就依赖上面的情况 C 白名单。</p>
   </section>
 
   <footer>本次修复文档对应版本：schema_version 2026.11.26-1 · 需要时把本页打印或转给运维同学</footer>

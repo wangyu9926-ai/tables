@@ -163,6 +163,7 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
 |---|---|
 | 双击 `启动看板-带登录.bat` 窗口一闪就关，或报 `'xxx' 不是内部或外部命令` | `.bat` 必须是 **GBK + CRLF**（仓库带了 `.gitattributes`，别用编辑器另存成 UTF-8/LF）。临时排查：在窗口里手动跑 `python auth_gate/run_gate.py` 看报错 |
 | `ModuleNotFoundError: No module named 'fastapi'`（或 pandas / pymysql 等） | 没装依赖：在项目目录执行 `pip install -r requirements.txt` |
+| 登录页提示「请求不是本站页面发起的，已拒绝」 | 反向代理没把 Host 传给应用（IIS/ARR 勾 Preserve host header；nginx 加 `proxy_set_header Host $host;` 和 `X-Forwarded-Host $host;`）。改不了代理就设 `GATE_ALLOWED_ORIGINS=https://你的域名` 精确放行；详细步骤见 `docs/修复-登录被拒403.html` |
 | 回归脚本提示「拒绝运行：默认地址是线上业务库」 | 这是有意的：默认会往业务库写测试数据。日常验证用 `KB_TEST_BASE=http://127.0.0.1:8617` 指向临时实例；确需对生产体检加 `KB_TEST_ALLOW_PROD=1` |
 | 导入或导出 Excel 时提示 503「服务器缺少 pandas / openpyxl」 | 依赖没装全（这两个只在导入导出时才用到）：`pip install -r requirements.txt`，然后重启一次服务 |
 | `TypeError: unsupported operand type(s) for \|: 'type' and 'NoneType'` | Python 版本太低：需要 **3.10+**（推荐 3.11），用 `python --version` 确认 |
