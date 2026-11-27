@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>牧马人线上多维表 · 使用指南与技术栈</title>
+<style>
+  :root {
+    --ink: #1b1f26;
+    --ink-2: #3d4553;
+    --muted: #66707f;
+    --line: #e3e7ee;
+    --bg: #f5f7fb;
+    --card: #ffffff;
+    --accent: #2f6bff;
+    --accent-soft: #eef3ff;
+    --ok: #0f766e;
+    --ok-soft: #ecfdf5;
+    --warn: #b45309;
+    --warn-soft: #fff8ed;
+    --danger: #b42318;
+    --radius: 14px;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 8px 28px rgba(16, 24, 40, .06);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.75 "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, -apple-system, sans-serif;
+    word-break: break-word;
+  }
+  .page { max-width: 1040px; margin: 0 auto; padding: 40px 24px 96px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ---------- 封面 ---------- */
+  .cover {
+    background: linear-gradient(135deg, #1d2a4a 0%, #243a6b 55%, #2f6bff 130%);
+    color: #fff;
+    border-radius: 22px;
+    padding: 44px 44px 36px;
+    box-shadow: var(--shadow);
+    position: relative;
+    overflow: hidden;
+  }
+  .cover::after {
+    content: "";
+    position: absolute;
+    right: -80px; top: -80px;
+    width: 320px; height: 320px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,255,255,.22), rgba(255,255,255,0) 70%);
+  }
+  .cover .eyebrow { font-size: 13px; letter-spacing: .18em; opacity: .78; margin-bottom: 14px; }
+  .cover h1 { margin: 0 0 10px; font-size: 34px; line-height: 1.28; font-weight: 700; letter-spacing: .01em; }
+  .cover p { margin: 0; max-width: 640px; color: #dbe4ff; font-size: 15.5px; }
+  .cover .meta { margin-top: 26px; display: flex; flex-wrap: wrap; gap: 10px 22px; font-size: 13px; color: #c9d6ff; }
+
+  /* ---------- 速览卡片 ---------- */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 12px; margin: 22px 0 8px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+  .stat b { display: block; font-size: 17.5px; letter-spacing: .01em; }
+  .stat span { display: block; margin-top: 2px; font-size: 12.5px; color: var(--muted); }
+
+  /* ---------- 目录 ---------- */
+  .toc { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 22px 24px; margin: 22px 0 34px; box-shadow: var(--shadow); }
+  .toc h2 { margin: 0 0 14px; font-size: 15px; letter-spacing: .08em; color: var(--muted); font-weight: 600; }
+  .toc ol { margin: 0; padding: 0; list-style: none; columns: 2; column-gap: 34px; }
+  .toc li { margin: 0 0 8px; break-inside: avoid; font-size: 14.5px; }
+  .toc .part { font-weight: 700; color: var(--ink); margin-top: 10px; }
+  .toc .part:first-child { margin-top: 0; }
+  .toc a { color: var(--ink-2); }
+
+  /* ---------- 正文 ---------- */
+  section { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 30px 34px; margin: 0 0 22px; box-shadow: var(--shadow); }
+  section > h2 {
+    margin: 0 0 6px; font-size: 22px; line-height: 1.4;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  section > h2 .no {
+    font-size: 13px; font-weight: 700; color: var(--accent);
+    background: var(--accent-soft); border-radius: 999px; padding: 3px 10px; letter-spacing: .06em;
+  }
+  section > .lead { margin: 0 0 20px; color: var(--muted); font-size: 14.5px; }
+  h3 { font-size: 16.5px; margin: 30px 0 10px; padding-top: 2px; }
+  h3:first-of-type { margin-top: 18px; }
+  h4 { font-size: 14.5px; margin: 20px 0 6px; color: var(--ink-2); }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0 8px 22px; padding: 0; }
+  li { margin: 4px 0; }
+  strong { font-weight: 600; }
+  code, kbd { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+  code { background: #f2f4f8; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 13px; }
+  kbd {
+    display: inline-block; min-width: 20px; text-align: center;
+    background: #fff; border: 1px solid #cfd6e2; border-bottom-width: 2px;
+    border-radius: 6px; padding: 1px 7px; font-size: 12.5px; color: var(--ink-2);
+  }
+
+  table { width: 100%; border-collapse: collapse; margin: 14px 0 6px; font-size: 14px; }
+  caption { text-align: left; color: var(--muted); font-size: 12.5px; padding-bottom: 6px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  thead th { background: #f7f9fc; color: var(--ink-2); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:nth-child(even) { background: #fbfcfe; }
+
+  .tip, .warn, .note {
+    border-radius: 12px; padding: 12px 16px; margin: 14px 0; font-size: 14px;
+    border: 1px solid transparent;
+  }
+  .tip { background: var(--ok-soft); border-color: #c9efe7; color: #115e57; }
+  .warn { background: var(--warn-soft); border-color: #fde2bd; color: #8a4b06; }
+  .note { background: #f7f9fc; border-color: var(--line); color: var(--ink-2); }
+  .tip b, .warn b, .note b { font-weight: 600; }
+
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 28px; }
+  .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 16px; font-size: 14.5px; }
+  .files { list-style: none; margin: 4px 0 0; padding: 0; }
+  .files li { margin: 0 0 7px; font-size: 13.5px; line-height: 1.65; color: var(--ink-2); }
+  .files code { font-size: 12.5px; margin-right: 5px; background: #f7f9fc; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; }
+
+  .pill { display: inline-block; font-size: 12px; padding: 1px 9px; border-radius: 999px; background: var(--accent-soft); color: #2450b8; margin-right: 4px; }
+  .pill.gray { background: #f1f3f7; color: var(--muted); }
+
+  footer { color: var(--muted); font-size: 13px; text-align: center; margin-top: 34px; }
+
+  /* ---------- 打印 ---------- */
+  @media print {
+    :root { --bg: #fff; --shadow: none; }
+    body { background: #fff; font-size: 12.5pt; }
+    .page { max-width: none; padding: 0; }
+    .cover { border-radius: 0; box-shadow: none; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    section { break-inside: auto; box-shadow: none; border: none; padding: 0 0 8px; margin: 0 0 18px; }
+    section > h2 { break-after: avoid; }
+    h3, h4 { break-after: avoid; }
+    table, .tip, .warn, .note, .stat { break-inside: avoid; }
+    thead { display: table-header-group; }
+    a { color: inherit; text-decoration: none; }
+    .toc { break-after: page; }
+  }
+  @media (max-width: 760px) {
+    .page { padding: 20px 12px 60px; }
+    .cover { padding: 30px 22px; border-radius: 16px; }
+    .cover h1 { font-size: 25px; }
+    section { padding: 22px 18px; }
+    .toc ol { columns: 1; }
+    .cols2 { grid-template-columns: 1fr; }
+    .kv { grid-template-columns: 108px 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="cover">
+    <div class="eyebrow">内部系统 · 使用与架构说明</div>
+    <h1>牧马人线上多维表<br>使用指南与技术栈</h1>
+    <p>一个可自助建表的多维表格引擎：登录网关保护、多人实时协作、公式与筛选、汇总同步、看板分析、Excel 导入导出。本文件同时面向使用者（怎么用）与技术评审（怎么实现、边界在哪）。</p>
+    <div class="meta">
+      <span>适用版本：2026.11 结构（schema_version 2026.11.26-1）</span>
+      <span>文档位置：docs/使用指南与技术栈.html</span>
+      <span>可直接打印或转发</span>
+    </div>
+  </header>
+
+  <div class="stats">
+    <div class="stat"><b>FastAPI + MySQL 8</b><span>后端与存储</span></div>
+    <div class="stat"><b>原生 JS · 无构建</b><span>前端 12 个模块文件</span></div>
+    <div class="stat"><b>登录网关</b><span>scrypt 口令 · 分级权限</span></div>
+    <div class="stat"><b>SSE 实时刷新</b><span>约 0.1–0.2 秒上屏</span></div>
+    <div class="stat"><b>365 项回归</b><span>上线前自动体检</span></div>
+  </div>
+
+  <nav class="toc" aria-label="目录">
+    <h2>目录</h2>
+    <ol>
+      <li class="part">第一部分 · 使用指南</li>
+      <li><a href="#s1">1. 登录、账号与权限</a></li>
+      <li><a href="#s2">2. 页面结构：项目 → 表 → Sheet</a></li>
+      <li><a href="#s3">3. 编辑单元格与批量操作</a></li>
+      <li><a href="#s4">4. 筛选、排序、搜索与视图</a></li>
+      <li><a href="#s5">5. 行详情、批注、图片</a></li>
+      <li><a href="#s6">6. 汇总同步（子表 → 总表）</a></li>
+      <li><a href="#s7">7. 数据分析看板</a></li>
+      <li><a href="#s8">8. 导入、导出与对外写入</a></li>
+      <li><a href="#s9">9. 变动历史与实时协作</a></li>
+      <li><a href="#s10">10. 快捷键速查</a></li>
+      <li class="part">第二部分 · 技术栈汇报</li>
+      <li><a href="#s11">11. 总体架构</a></li>
+      <li><a href="#s12">12. 技术选型</a></li>
+      <li><a href="#s13">13. 代码结构</a></li>
+      <li><a href="#s14">14. 数据模型</a></li>
+      <li><a href="#s15">15. 关键机制</a></li>
+      <li><a href="#s16">16. 安全设计</a></li>
+      <li><a href="#s17">17. 性能、容量与边界</a></li>
+      <li><a href="#s18">18. 部署、备份与测试</a></li>
+      <li class="part">第三部分 · 附录</li>
+      <li><a href="#s19">19. 常见问题</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <!-- ============ 第一部分 ============ -->
+    <section id="s1">
+      <h2><span class="no">01</span>登录、账号与权限</h2>
+      <p class="lead">系统没有“游客”形态：未登录只能看到登录页，所有数据接口都要求登录态。</p>
+
+      <h3>1.1 登录</h3>
+      <ul>
+        <li>浏览器打开系统地址（本机是 <code>https://127.0.0.1:8614</code>），输入管理员开通的<b>账号 + 密码</b>。</li>
+        <li>自签证书部署时浏览器会提示「不是私密连接」：点「高级 → 继续前往」。装过信任包或使用正式证书后不再提示。</li>
+        <li>连续输错会被锁定（按账号 + 来源 IP 分级限流），等几分钟或让管理员重置。</li>
+        <li>忘记密码：让管理员在「用户管理」里重置；自己也可以在右上角账号菜单里改密码（改完旧登录凭证立即失效）。</li>
+      </ul>
+
+      <h3>1.2 三种角色</h3>
+      <table>
+        <thead><tr><th>角色</th><th>能做什么</th><th>不能做什么</th></tr></thead>
+        <tbody>
+          <tr><td><b>管理员 admin</b></td><td>建/删项目与表、字段管理、汇总同步、写入密钥、看板、账号与授权</td><td>—（权限模型内的最高角色）</td></tr>
+          <tr><td><b>可编辑 editor</b></td><td>在授权范围内改数据、加行删行、批注、存自己的视图</td><td>建删表、改列结构（除非被下发「字段管理」能力）</td></tr>
+          <tr><td><b>只读 viewer</b></td><td>看数据、筛选、导出、写批注、存自己的私人视图</td><td>改数据、存团队视图、改列结构</td></tr>
+        </tbody>
+      </table>
+      <p>权限可以授在<b>项目级</b>或<b>表级</b>。新建账号默认没有任何授权，由创建者在「用户管理 → 授权」里分配，且不能授出比自己更高的角色。</p>
+
+      <div class="warn"><b>注意：隐藏列不是权限。</b>字段管理里的「隐藏」只影响显示；有这张表读权限的人仍能通过接口拿到隐藏列的值。敏感数据请用「授权」隔离，不要靠隐藏列。</div>
+    </section>
+
+    <section id="s2">
+      <h2><span class="no">02</span>页面结构：项目 → 表 → Sheet</h2>
+      <p class="lead">三层导航：首页是项目卡片，进入项目后左侧是分组，顶部是 Sheet 页签。</p>
+      <ul>
+        <li><b>新建项目</b>：首页「＋ 新建项目」；项目卡片可重命名、删除（管理员）。</li>
+        <li><b>新建表格 / Sheet</b>：项目页或表页的「＋ 新建表格」；Sheet 页签右侧「＋」在<b>当前分组</b>里新建，复制当前 Sheet 的列结构（不带行）。</li>
+        <li><b>任意建列</b>：字段管理 →「＋ 新增字段」，选类型（文本 / 数字 / 日期 / 单选 / 多选 / 勾选 / 图片 / 公式）、填选项或公式。</li>
+        <li><b>分组与顺序</b>：侧栏分组可双击改名；表名 / 页签长按拖动只调整<b>你自己的</b>顺序（存在本机，不影响同事）。</li>
+        <li><b>侧栏收起</b>：「收起 / 展开」把数据表侧栏隐藏，表格全宽。</li>
+      </ul>
+    </section>
+
+    <section id="s3">
+      <h2><span class="no">03</span>编辑单元格与批量操作</h2>
+      <p class="lead">交互按 Excel / 表格软件的习惯设计：单击选中、双击编辑、方向键移动、整片复制粘贴。</p>
+
+      <h3>3.1 编辑</h3>
+      <ul>
+        <li>双击单元格进入编辑；选中后按 <kbd>Enter</kbd> / <kbd>F2</kbd> 也行，直接打字就是替换输入。</li>
+        <li>编辑中 <kbd>Tab</kbd> 提交并右移，<kbd>Shift</kbd>+<kbd>Tab</kbd> 左移，<kbd>Esc</kbd> 取消。</li>
+        <li>勾选列单击即切换；单选/多选双击弹选项浮层；日期双击弹日历。</li>
+        <li>数字列可以写 <code>2万</code>、<code>1.8w</code>、<code>4.7万</code>，保存时统一成数值。</li>
+        <li>每个单元格都带版本号（乐观锁）：你保存时如果同事刚改过这一行，会提示「已被别人改过」，不会覆盖对方。</li>
+      </ul>
+
+      <h3>3.2 区域选择与批量</h3>
+      <ul>
+        <li>按住左键<b>拖选</b>一片；<kbd>Shift</kbd>+单击或 <kbd>Shift</kbd>+方向键从锚点扩展；方向键移动光标。</li>
+        <li><kbd>Delete</kbd> / <kbd>Backspace</kbd> 清空选中格（一次请求、可撤销）。</li>
+        <li><kbd>Ctrl</kbd>+<kbd>C</kbd> 把整片复制成 TSV，可直接粘回 Excel。</li>
+        <li>选区右下角的<b>蓝色小方块</b>是填充柄：按住往下拖，按选区第一行向下重复。整片算一次操作，<kbd>Ctrl</kbd>+<kbd>Z</kbd> 一次撤销。</li>
+        <li><kbd>Ctrl</kbd>+<kbd>V</kbd> 粘贴一片：未变化的格子自动跳过；<b>行不够会自动在表尾建行</b>；只复制了一个值却选了一片时，会铺满整个选区。</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd> 撤销 / 重做自己的改动（批量粘贴算一条）。</li>
+      </ul>
+
+      <h3>3.3 行与列</h3>
+      <ul>
+        <li><b>新增行</b>：「＋ 行」；有筛选/搜索时会先清掉，保证新行可见。</li>
+        <li><b>行间插入</b>：悬停最左侧两个行号交界处出现蓝色「＋」，点一下在该位置插入。</li>
+        <li><b>拖动行</b>：按住行号上下拖（松手才保存，蓝线指示落点）。行顺序是表数据的一部分，<b>所有人可见</b>。</li>
+        <li><b>右键菜单</b>：行上右键可上移/下移、插入、复制这一行、批注、行详情、删除；列头上右键可「按内容适应列宽」、恢复默认、按此列排序。</li>
+        <li><b>列宽</b>：拖表头右边界，双击恢复默认（只影响你自己）。</li>
+      </ul>
+    </section>
+
+    <section id="s4">
+      <h2><span class="no">04</span>筛选、排序、搜索与视图</h2>
+      <ul>
+        <li><b>单列筛选</b>：表头漏斗 → 值多选（带计数）/ 日期日历；浮层顶部直接有「升序 / 降序」。选项列还能切「自定义条件…」。</li>
+        <li><b>高级筛选</b>：任意筛选浮层底部「高级筛选：多列「且 / 或」…」，一次最多 20 条条件跨列组合，例如
+          <code>当前阶段 = 已发布 且 合作金额 ≥ 1000</code>。只支持一层组合（全部满足 / 任一满足），不做嵌套。</li>
+        <li><b>搜索</b>：工具栏搜索框；排序点列头（▲/▼）。</li>
+        <li><b>视图</b>：把「搜索 + 筛选 + 排序」存成命名视图，一键切换（同名覆盖）。自己的视图存在本机、按表分开；
+          有编辑权限的人还能存<b>团队视图</b>（存服务端、本表所有人可用，只有保存者和管理员能删）。</li>
+        <li><b>重置</b>：改动过搜索/筛选/排序后工具栏出现「重置」，一键回到默认视图；分页处始终显示「共 N 行」或「筛选后 N 行（全部 M 行）」。</li>
+      </ul>
+      <div class="tip"><b>视图 vs 表</b>：搜索、筛选、排序、列宽、页签顺序都是<b>你自己的</b>；真正共享的是表结构（列、隐藏、汇总规则、看板）和团队视图。</div>
+    </section>
+
+    <section id="s5">
+      <h2><span class="no">05</span>行详情、批注、图片</h2>
+      <ul>
+        <li><b>行详情</b>：双击最左侧行号，右侧面板按字段类型改整行，改完自动保存；手机端点行号全屏打开。</li>
+        <li><b>批注</b>：选中格子后点气泡按钮，或右键「添加 / 查看批注」。有批注的格子右上角显示橙色角标。
+          批注<b>不算改数据</b>，只读账号也能写；只能删自己的，管理员可删任意。</li>
+        <li><b>图片</b>：image 列双击上传，也支持 <kbd>Ctrl</kbd>+<kbd>V</kbd> 粘贴、拖入、外链；单元格显示缩略图。
+          单张 ≤ 8MB；<b>每张表图片总量默认 512MB</b>，到顶会拒绝上传，需要先清空回收站。</li>
+      </ul>
+    </section>
+
+    <section id="s6">
+      <h2><span class="no">06</span>汇总同步（子表 → 总表）</h2>
+      <p class="lead">把多张子表的数据自动汇到一张总表里，不改变子表任何内容。</p>
+      <ul>
+        <li>入口：<b>总表</b>顶栏「汇总同步」（管理员）→ 选同项目子表 → 逐字段映射；可点「来源表名（自动）」把子表名写进总表某列。</li>
+        <li>首次保存会把子表已有行全量复制过去（后台执行，界面显示进度）；之后增量同步：子表新增 → 总表追加，修改 → 更新，删除 → 软删。</li>
+        <li>一个总表可以接多张子表，每张一条规则；总表会用「汇总总表」徽标提示数据来自哪些子表。</li>
+        <li><b>双向</b>：在总表里改「镜像行」会回写到子表对应行（冲突时总表优先）；在总表里<b>直接新增</b>的行不覆盖子表；删除镜像行会让子表那行一起软删。</li>
+      </ul>
+      <div class="warn"><b>注意</b>：汇总只做字段搬运，不做计算或去重；历史上重复过的数据不会被自动合并。</div>
+    </section>
+
+    <section id="s7">
+      <h2><span class="no">07</span>数据分析看板</h2>
+      <ul>
+        <li>表页顶栏「分析」进入项目级看板：选表、维度、指标、筛选、图表类型（柱 / 条形 / 折线 / 饼 / 表格 / 指标卡），实时预览后保存。</li>
+        <li>新建看板收在左上角看板下拉里的「＋ 新建看板…」；新建图表只有一个入口，避免多个按钮打架。</li>
+        <li>看板可以发布到侧栏（按页面组织），同事点开即可看。</li>
+        <li>分析在浏览器里聚合：<b>单表超过 5 万行</b>时页头会提示「整表加载会慢」，建议先汇总成小表再分析。</li>
+      </ul>
+    </section>
+
+    <section id="s8">
+      <h2><span class="no">08</span>导入、导出与对外写入</h2>
+
+      <h3>8.1 导入</h3>
+      <ul>
+        <li>表页顶栏「导入」：支持 <code>.xlsx</code> / <code>.xls</code> / <code>.xlsm</code> / <code>.csv</code>，单文件 ≤ 20MB、≤ 50000 行。</li>
+        <li>可先预览前几行，再选「追加 / 覆盖 / 新建表」；列映射与列类型可调，表头默认第 1 行。</li>
+        <li>16 位以上纯数字（订单号、手机号等）会自动按文本导入，避免精度丢失。</li>
+      </ul>
+
+      <h3>8.2 导出</h3>
+      <ul>
+        <li>顶栏「导出」下拉：<b>CSV</b>（防公式注入）或 <b>Excel .xlsx</b>（表头加粗冻结、列宽沿用表设置、公式列给算好的值）。</li>
+      </ul>
+
+      <h3>8.3 对外写入（脚本 / RPA）</h3>
+      <ul>
+        <li>表页「写入密钥」（管理员）生成表级密钥；脚本调 <code>POST /api/in/&lt;表ID&gt;</code>，带 <code>X-KB-Token</code> 即可免登录插入，单次 ≤ 1000 行。</li>
+        <li>要防“重试插重”，再加 <code>X-Idempotency-Key: 你的业务单号</code>：同一个键重试直接返回上次结果，不重复插入（7 天窗口）。</li>
+        <li>密钥只对所属表有效，只能插入：不能读数据、不能改结构；随时可作废，立即生效。</li>
+      </ul>
+    </section>
+
+    <section id="s9">
+      <h2><span class="no">09</span>变动历史与实时协作</h2>
+      <ul>
+        <li><b>变动历史</b>：顶栏「变动历史」按「谁 · 时间 · 做了什么」显示，包括旧值 → 新值；接口写入、密钥、汇总回写这类系统动作也会翻成人话。</li>
+        <li><b>实时刷新</b>：页面开着某张表时，同事一改，<b>约 0.1–0.2 秒</b>内出现，而且只重画变的那几行，滚动位置不动、输入框不会被冲掉。</li>
+        <li>断线会退回每 5 秒轮询；重新连上后自动恢复推送。</li>
+        <li>两个人同时改同一格：后保存的人会收到「已被别人改过」的提示，由服务端版本号裁决，不会静默覆盖。</li>
+        <li>切到别的窗口再切回来，会静默刷新当前页（4 秒内不重复请求）。</li>
+      </ul>
+    </section>
+
+    <section id="s10">
+      <h2><span class="no">10</span>快捷键速查</h2>
+      <table>
+        <thead><tr><th>按键</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><kbd>Enter</kbd> / <kbd>F2</kbd></td><td>编辑选中的单元格</td></tr>
+          <tr><td>直接输入文字</td><td>进入编辑，用新内容替换原值</td></tr>
+          <tr><td><kbd>Tab</kbd> / <kbd>Shift</kbd>+<kbd>Tab</kbd></td><td>提交并跳到右 / 左一格</td></tr>
+          <tr><td>方向键</td><td>移动选中的单元格</td></tr>
+          <tr><td><kbd>Shift</kbd>+方向键</td><td>扩展选区</td></tr>
+          <tr><td><kbd>Delete</kbd> / <kbd>Backspace</kbd></td><td>清空选中的格子</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>复制整片（TSV）/ 粘贴一片</td></tr>
+          <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>撤销 / 重做（批量操作算一条）</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>取消编辑 / 关闭浮层</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- ============ 第二部分 ============ -->
+    <section id="s11">
+      <h2><span class="no">11</span>总体架构</h2>
+      <p class="lead">单进程 Python 应用 + MySQL；浏览器只与本机/内网的一个端口通信，登录态在网关层统一校验。</p>
+      <div class="note">
+<pre style="margin:0;overflow:auto;font-size:13px;line-height:1.6;">
+浏览器（原生 JS，无构建，12 个模块脚本）
+   │  HTTPS（或反向代理终结 TLS）
+   ▼
+登录网关 auth_gate
+   ├─ Cookie 签名校验（HMAC-SHA256）· scrypt 口令 · 失败锁定 / 限流 · 同源写保护
+   ├─ 内容安全策略（脚本按 sha256 哈希放行）· 安全响应头
+   ▼
+FastAPI 应用（backend/app.py 装配层）
+   ├─ modules/*.py   按功能的路由（表 / 列 / 行 / 视图 / 导入导出 / 同步 / 看板 …）
+   ├─ deps.py        共享层：进程内缓存、权限、JSON、缓存失效
+   ├─ engine.py      建表、CRUD、公式引擎（AST 白名单）
+   ├─ sync.py        汇总同步队列（子表 ↔ 总表）
+   └─ changes.py     变更日志 + SSE 推送
+   ▼
+MySQL 8（utf8mb4）· kb_* 表
+</pre>
+      </div>
+      <p>所有列表/单元格请求都经过同一套权限检查（项目级/表级 × 只读/可编辑），写操作写审计并推送到打开这页的浏览器。</p>
+    </section>
+
+    <section id="s12">
+      <h2><span class="no">12</span>技术选型</h2>
+      <table>
+        <caption>选型原则：依赖少、可直接拷走部署、局域网/服务器都能跑、无需前端构建链。</caption>
+        <thead><tr><th>层</th><th>选型</th><th>为什么</th></tr></thead>
+        <tbody>
+          <tr><td>运行时</td><td>Python 3.11</td><td>依赖成熟；Windows 双击启动与 Linux systemd 都能用</td></tr>
+          <tr><td>Web 框架</td><td>FastAPI + uvicorn</td><td>类型化接口、自动校验、SSE 流式响应简单；单进程即可支撑内网并发</td></tr>
+          <tr><td>数据库</td><td>MySQL 8（utf8mb4）</td><td>行存 JSON + 事务 + 成熟的运维/备份工具链</td></tr>
+          <tr><td>数据访问</td><td>PyMySQL + 自建连接池</td><td>无重框架；连接池按进程复用，空闲连接探测存活</td></tr>
+          <tr><td>导入导出</td><td>pandas / openpyxl / xlrd</td><td>Excel 兼容性最稳；只在导入导出时按需加载</td></tr>
+          <tr><td>前端</td><td>原生 JS + CSS（无框架、无构建）</td><td>直接由静态目录提供，改完刷新即生效；避免前端工具链成为部署负担</td></tr>
+          <tr><td>实时</td><td>SSE + 轮询兜底</td><td>单向推送够用，比 WebSocket 简单、穿代理更稳</td></tr>
+          <tr><td>安全</td><td>哈希 CSP、HMAC Cookie、scrypt</td><td>不引入额外依赖，策略可随页面内容自动计算</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="s13">
+      <h2><span class="no">13</span>代码结构</h2>
+      <div class="cols2">
+        <div>
+          <h4>后端</h4>
+          <ul class="files">
+            <li><code>app.py</code>装配层：FastAPI 实例、异常处理、中间件、路由挂载、静态目录、首页</li>
+            <li><code>deps.py</code>共享层：进程内缓存、权限、JSON、缓存失效、常量</li>
+            <li><code>modules/</code>按功能的路由：meta / projects / tables / columns / rows / events / comments / misc / export / images / apikeys / ingest / imports / sync_api / views / dashboards</li>
+            <li><code>engine.py</code>建表、CRUD、公式引擎、CSP 计算</li>
+            <li><code>sync.py</code>汇总同步队列与回写</li>
+            <li><code>changes.py</code>变更日志 + SSE 订阅</li>
+            <li><code>db.py</code>连接配置与连接池</li>
+            <li><code>auth_gate/</code>登录网关、首启向导、证书</li>
+            <li><code>tools/</code>备份、软删数据清理</li>
+          </ul>
+        </div>
+        <div>
+          <h4>前端</h4>
+          <ul class="files">
+            <li><code>index.html</code>页面骨架 + 样式</li>
+            <li><code>js/core.js</code>工具函数（$ / 提示 / 忙碌态）</li>
+            <li><code>js/shell.js</code>项目 → 表 → Sheet 导航、侧栏、页签</li>
+            <li><code>js/dialogs.js</code>通用弹窗、新建、写入密钥</li>
+            <li><code>js/sync-fields.js</code>汇总同步 UI、字段管理</li>
+            <li><code>js/grid-head.js</code>列宽、表头、视图</li>
+            <li><code>js/rows-live.js</code>行渲染、分页、实时刷新</li>
+            <li><code>js/cells.js</code>选中、区域选择、填充柄、编辑、撤销</li>
+            <li><code>js/paste-panel.js</code>粘贴、批注、行详情</li>
+            <li><code>js/filters-tools.js</code>筛选、历史、导出</li>
+            <li><code>js/auth-menu.js</code>登录态、用户管理、右键菜单</li>
+            <li><code>js/analysis.js</code>看板与图表</li>
+            <li><code>js/import-select.js</code>导入、下拉、日期选择器、移动端</li>
+          </ul>
+        </div>
+      </div>
+      <div class="tip"><b>约定</b>：后端新功能 = 在 <code>modules/</code> 新增一个文件（一个 <code>APIRouter</code>）+ 在 <code>app.py</code> 按原位置挂载（路径匹配按注册顺序）；前端新功能 = 放进对应 <code>js/*.js</code>，改前端不用重启服务。</div>
+    </section>
+
+    <section id="s14">
+      <h2><span class="no">14</span>数据模型</h2>
+      <table>
+        <thead><tr><th>表</th><th>作用</th></tr></thead>
+        <tbody>
+          <tr><td><code>kb_table</code></td><td>表定义：名称、所属项目/分组、图标、排序</td></tr>
+          <tr><td><code>kb_column</code></td><td>列定义：key / 显示名 / 类型 / 选项与配色 / 公式表达式 / 列宽 / 必填 / 隐藏</td></tr>
+          <tr><td><code>kb_row</code></td><td>行数据：JSON + 版本号（乐观锁）+ 排序 + 软删</td></tr>
+          <tr><td><code>kb_audit</code></td><td>变动历史：谁 / 何时 / 哪行哪列 / 旧值→新值</td></tr>
+          <tr><td><code>kb_view</code></td><td>团队视图：表 / 名称 / 作者 / 是否共享 / 配置 JSON</td></tr>
+          <tr><td><code>kb_dashboard</code></td><td>项目级看板与图表配置</td></tr>
+          <tr><td><code>kb_comment</code></td><td>单元格批注（软删，作者或管理员可删）</td></tr>
+          <tr><td><code>kb_image</code></td><td>图片二进制（按表权限读取；每表配额）</td></tr>
+          <tr><td><code>kb_apikey</code></td><td>表级写入密钥（只存 sha256）</td></tr>
+          <tr><td><code>kb_idem</code></td><td>HTTP 写入幂等键（7 天窗口）</td></tr>
+          <tr><td><code>kb_sync / kb_sync_link</code></td><td>汇总同步规则 / 镜像行与源行的对应关系</td></tr>
+          <tr><td><code>kb_user / kb_perm</code></td><td>账号 / 项目级与表级授权</td></tr>
+          <tr><td><code>kb_setting</code></td><td>系统设置：默认授权标记、库结构版本 <code>schema_version</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="s15">
+      <h2><span class="no">15</span>关键机制</h2>
+
+      <h3>15.1 公式引擎</h3>
+      <p>支持同行字段引用与同项目跨表 <code>LOOKUP / SUMIF / COUNTIF / AVGIF / MAXIF / MINIF</code>。表达式用 Python AST 白名单求值（只允许算术、比较、字符串/日期函数），并做了嵌套重复、可空重复等灾难性写法预检查与长度上限。表/组改名会同步更新公式里写死的表名引用。</p>
+
+      <h3>15.2 并发与一致性</h3>
+      <ul>
+        <li>行级版本号：<code>UPDATE … WHERE id=? AND ver=?</code>，冲突返回 409，前端提示刷新。</li>
+        <li>批量写接口逐行返回「更新 / 新建 / 版本冲突 / 报错」，一行失败不影响其它行。</li>
+        <li>汇总回写带线程内防循环标记；总表与子表冲突时总表优先。</li>
+        <li>删除一律软删，事后可由清理工具按天龄物理删除。</li>
+      </ul>
+
+      <h3>15.3 缓存与失效</h3>
+      <ul>
+        <li>元信息（表/列/权限视图）与行数据都缓存在进程内，写操作按路径精确失效，避免每次读都付远程库的往返。</li>
+        <li>缓存是<b>进程内</b>的：多实例部署会各看各的缓存，所以不支持多实例同时写同一库。</li>
+      </ul>
+
+      <h3>15.4 实时刷新</h3>
+      <p>每次写入递增该表的变更序号并广播事件；浏览器只取变的那几行（按 ID），只重画对应 <code>&lt;tr&gt;</code>。因此“改动→上屏”通常 100–200ms，且不影响滚动与未保存的输入。</p>
+
+      <h3>15.5 内容安全策略（CSP）</h3>
+      <p>脚本只放行<b>同源外部文件</b>（主页面 12 个 js）与<b>按内容 sha256 哈希的内联块</b>（登录页、用户管理页）。页面里出现 <code>onclick="…"</code> 这类内联事件不会被执行；服务端只记错误、不会自动放宽策略。</p>
+    </section>
+
+    <section id="s16">
+      <h2><span class="no">16</span>安全设计</h2>
+      <table>
+        <thead><tr><th>面</th><th>做法</th></tr></thead>
+        <tbody>
+          <tr><td>登录</td><td>scrypt 口令哈希；会话 Cookie 用 HMAC-SHA256 签名并绑定账号版本，改密/重置即失效</td></tr>
+          <tr><td>暴力破解</td><td>按账号与来源 IP 分级锁定/限流；代理部署时按可信 <code>X-Forwarded-For</code> 取真实 IP</td></tr>
+          <tr><td>跨站</td><td>写请求校验 <code>Sec-Fetch-Site</code> / <code>Origin</code> 与 Host 同源；SameSite Cookie</td></tr>
+          <tr><td>XSS</td><td>哈希 CSP（无 <code>unsafe-inline</code>）+ 输出转义；不使用内联事件</td></tr>
+          <tr><td>传输</td><td>默认 HTTPS（自签）；正式证书/反代场景自动启用 Secure Cookie 与 HSTS</td></tr>
+          <tr><td>权限</td><td>项目/表级 × 只读/可编辑；字段管理与账号管理能力可下发；越权一律 4xx</td></tr>
+          <tr><td>审计</td><td>所有写操作落变动历史；接口写入记录密钥备注</td></tr>
+          <tr><td>密钥</td><td>表级写入密钥只存 sha256，明文只显示一次；数据库口令只存在环境变量/本机 secrets 文件</td></tr>
+        </tbody>
+      </table>
+      <div class="warn"><b>部署建议</b>：给应用单独建一个只对本库有权限的数据库账号，不要用 root；定期轮换口令；把数据库白名单限制到服务器出口 IP。</div>
+    </section>
+
+    <section id="s17">
+      <h2><span class="no">17</span>性能、容量与边界</h2>
+      <table>
+        <thead><tr><th>项</th><th>现状</th></tr></thead>
+        <tbody>
+          <tr><td>读性能</td><td>元信息/行数据进程内缓存；列表页只返回当前页；典型内网读写 p50 约 0.1–0.2 秒</td></tr>
+          <tr><td>写并发</td><td>行级乐观锁 + 连接池（超额排队而非无限建连）；批量写单次 ≤ 500 行（界面自动分批）</td></tr>
+          <tr><td>单表规模</td><td>行数据存 JSON，几十万行内可用；<b>分析页</b>在前端聚合，单表 > 5 万行会提示变慢</td></tr>
+          <tr><td>导入</td><td>单文件 ≤ 20MB、≤ 50000 行</td></tr>
+          <tr><td>图片</td><td>单张 ≤ 8MB；每表累计默认 512MB（可用环境变量调）</td></tr>
+          <tr><td>对外写入</td><td>单次 ≤ 1000 行；建议带幂等键</td></tr>
+          <tr><td>已知边界</td><td>公式不支持跨行窗口函数；不支持跨项目引用；不做多实例部署；隐藏列不是权限；区域选择/填充柄只在当前页范围内</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="s18">
+      <h2><span class="no">18</span>部署、备份与测试</h2>
+
+      <h3>18.1 部署</h3>
+      <ul>
+        <li><b>本机 / 局域网</b>：双击单一的启动脚本，首启向导会问数据库连接和管理员账号，然后自动生成自签证书并以 HTTPS 监听。</li>
+        <li><b>服务器 + 域名</b>：nginx / Caddy 终结 TLS → 应用只监听 <code>127.0.0.1</code>；配置 <code>GATE_HTTPS=1</code>（Secure Cookie + HSTS）、SSE 关缓冲、时区 <code>GATE_TZ</code>；systemd 常驻。</li>
+        <li><b>升级</b>：拉取新代码 → 重启一次；表结构在启动时幂等补齐（<code>schema_version</code> 可查），已有数据不动。</li>
+      </ul>
+
+      <h3>18.2 备份与清理</h3>
+      <ul>
+        <li>备份脚本：<code>mysqldump --single-transaction</code>，压缩保存、默认保留最近 7 份、校验文件完整性；口令通过环境变量传入，不出现在命令行。</li>
+        <li>恢复：先停服务 → 备份当前库 → 导入 dump → 启动后抽查表/行/账号/汇总规则。</li>
+        <li>清理：软删的行/历史/回收站图片可按天龄物理删除（默认只统计，<code>--yes</code> 才动手，删前先备份）。</li>
+      </ul>
+
+      <h3>18.3 测试</h3>
+      <ul>
+        <li>上线前回归 <b>365 项断言</b>：登录与访问控制、增删改查与乐观锁、公式、筛选、导入导出、视图、幂等键、汇总同步与双向回写、SSE、CSP、畸形输入（只能 4xx 不能 500）。</li>
+        <li>回归只写 <code>__pretest__</code> 前缀的临时数据，退出自动清理；默认拒绝连生产库，需显式放行。</li>
+        <li>另有只读模糊测试（数千个畸形请求 0 个 5xx）、真实备份恢复演练、Linux 容器整轮回归。</li>
+      </ul>
+    </section>
+
+    <!-- ============ 第三部分 ============ -->
+    <section id="s19">
+      <h2><span class="no">19</span>常见问题</h2>
+
+      <h4>打不开登录页 / 提示「不是私密连接」</h4>
+      <p>自签证书的正常提示：点「高级 → 继续前往」。想彻底不提示，把服务器证书装进「受信任的根证书颁发机构」（当前用户即可），或改用域名 + 正式证书。</p>
+
+      <h4>登录提示被锁定</h4>
+      <p>连续输错触发限流，等几分钟再试；确认账号是管理员开通的那个，忘记密码让管理员重置。</p>
+
+      <h4>看不到某张表 / 某个项目</h4>
+      <p>没有授权。找管理员在「用户管理 → 授权」里加项目级或表级权限；新建账号默认无任何授权是设计如此。</p>
+
+      <h4>筛选后「数据不见了」</h4>
+      <p>多半是筛选/搜索挡住了：分页处会显示「筛选后 N 行（全部 M 行）」，点工具栏「重置」即可恢复。</p>
+
+      <h4>粘贴时提示行数太多 / 没反应</h4>
+      <p>粘贴会自动在表尾建行，超过 500 行界面会自动分批；如果目标列是公式列或图片列，会被跳过。</p>
+
+      <h4>公式不刷新 / 显示旧值</h4>
+      <p>公式由服务端计算，保存后立即生效；若页面长时间未动，刷新一次（或等实时推送）。汇总同步的总表由后台队列写入，界面会显示进度。</p>
+
+      <h4>导入或导出报「服务器缺少 pandas / openpyxl」</h4>
+      <p>服务器依赖没装全：在项目目录执行 <code>pip install -r requirements.txt</code> 后重启一次服务。</p>
+
+      <h4>端口被占用 / 窗口一闪就关</h4>
+      <p>已经有一个实例在跑：关掉旧窗口或换端口再启动；启动脚本必须是 GBK + CRLF（仓库已固定），不要另存成 UTF-8 / LF。</p>
+
+      <h4>多人同时改同一格</h4>
+      <p>后保存的人会收到「已被别人改过」，刷新后重新提交即可——这是故意的，避免互相覆盖。</p>
+    </section>
+  </main>
+
+  <footer>
+    牧马人线上多维表 · 使用指南与技术栈 · 本文件为静态 HTML，可直接打印或转发；内容随代码版本更新。
+  </footer>
+</div>
+</body>
+</html>
