@@ -19,7 +19,7 @@
 - 仅本机调试：`python run.py` 默认**拒绝启动**（它跳过登录网关，且是明文、免登录的）；确实要用必须显式设
   `KB_ALLOW_NOAUTH=1`，且它只绑 127.0.0.1，不要对外。
 
-- 后端：FastAPI（`backend/app.py` = 老路由与共享函数，`backend/modules/*.py` = 新功能模块，`backend/engine.py` = 引擎层）
+- 后端：FastAPI（`backend/app.py` = 装配层，`backend/modules/*.py` = 按功能的路由，`backend/deps.py` = 共享层，`backend/engine.py` = 引擎层）
 - 数据库：MySQL 5.7+/8.0（utf8mb4），连接配置在 `backend/db.py`，可用 `MUMA_DB_*` 环境变量覆盖；口令不写在代码里
 - 前端：`frontend/index.html`（页面骨架 + 样式）+ `frontend/js/*.js`（按功能拆分的 12 个脚本；纯静态、无构建）
 
@@ -532,12 +532,28 @@ GATE_CERT_DIR=/etc/kb-certs GATE_HSTS=1 python auth_gate/run_gate.py
 
 ```
 backend/
-  app.py            老路由 + 共享函数/缓存（路径顺序在这里，别乱挪）
-  modules/          新功能按模块放：一个文件一个 APIRouter
-    views.py        样板：保存的视图（个人 / 团队）
+  app.py            装配层（≈100 行）：FastAPI 实例、异常处理器、中间件、include_router、静态目录、首页
+  deps.py           共享层：引擎导出、进程内缓存、权限/列/行工具、JSON 序列化、缓存失效、常量
+  modules/          业务路由，一个功能一个文件（都 from backend.deps import *）
+    meta.py            /api/meta（首屏元信息）
+    projects.py        项目、分组/Sheet 排序、组改名
+    tables.py          表：建/改/删/改名
+    columns.py         列（字段）：加/改/删/排序
+    rows.py            行：列表筛选分页、按 ID 取、批量写、新建/移动/修改/删除
+    events.py          变更通知：/changes 轮询 + /events SSE
+    comments.py        单元格批注
+    misc.py            公式试算 / 变动历史 / 关联（保留接口）
+    export.py          导出 CSV / xlsx
+    images.py          图片上传/读取/回收站
+    apikeys.py         写入密钥
+    ingest.py          免登录写入 /api/in/{tid}
+    imports.py         Excel / CSV 导入
+    sync_api.py        汇总同步规则
+    views.py           保存的视图（个人 / 团队）
+    dashboards.py      数据分析看板
   engine.py         建表、CRUD、公式引擎、CSP
   sync.py           汇总同步队列
-  changes.py        变更日志 + SSE
+  changes.py        变更日志 + SSE 订阅
   db.py             连接池 / 配置
 frontend/
   index.html        页面骨架 + 样式
@@ -556,15 +572,18 @@ frontend/
 tools/               备份 / 软删清理
 ```
 
-- **加后端功能**：新建 `backend/modules/xxx.py`（里面一个 `router = APIRouter()`，请求体也放这个文件），
-  在 `backend/app.py` 里 `app.include_router(xxx.router)`，**放在原来写这些路由的位置** ——
-  FastAPI 按注册顺序匹配路径（例如 `/api/tables/{tid}/rows/bulk` 必须排在 `/rows/{rid}` 前面，否则会被当成 rid）。
-  公共函数用 `_a()` 延迟导入（见 `modules/views.py`），避免模块级 `from backend.app import ...` 的循环导入。
+- **加后端功能**：新建 `backend/modules/xxx.py`（一个 `router = APIRouter()`，路由和请求体都放这个文件；
+  开头 `from backend.deps import *` 拿公共函数），在 `backend/app.py` 里 `app.include_router(xxx.router)`，
+  **位置放在这些路由原来注册的地方** —— FastAPI 按注册顺序匹配路径（`/api/tables/{tid}/rows/bulk` 必须排在
+  `/rows/{rid}` 前面，否则会被当成 rid）。公共函数/缓存放 `deps.py`（它不导入 app.py，所以没有循环导入）。
+- **跨模块共享的可变状态必须放容器里**：`from backend.deps import *` 复制的是**绑定**，
+  裸标量在别的模块里只是导入那一刻的副本（拆分时踩过：`_META_GEN` 永远是 0，元信息缓存永不失效）。
+  现在用 `_META_VERS = {'gen':…, 'cnt':…}` 这种 dict。
 - **加前端功能**：放进对应的 `frontend/js/*.js`。函数都是全局的，跨文件可直接调用；新领域就新增一个文件，
   在 `index.html` 底部按依赖顺序加一行 `<script src="/static/js/xxx.js"></script>`（`?v=` 由服务端自动加）。
   **不要再往 `index.html` 里写内联脚本**：内容安全策略只放行同源文件 + 带哈希的内联块。
 - **只改前端不用重启后端**：服务端按 js 文件 mtime 自动换 `?v=`，浏览器会重新拉脚本；只有改后端代码才需要重启。
-- **老路由暂时不拆**：它们共用模块级缓存、路径顺序互相咬合，要拆得一个模块一轮回归，不跟功能改动混在一起。
+- 行缓存/元信息缓存都是**进程内**的：多实例部署会各看各的缓存，改结构要走接口（别直连库改表）。
 
 ## 上线前回归
 

@@ -24,6 +24,17 @@
   一行失败不影响其它行；畸形的 `id` / `ver` 逐条报错，不再 500。
 - 上线前回归扩到 **363 项断言**：批量行、xlsx、服务端视图、写入幂等、图片配额、清理工具只统计模式。
 
+## 2026-11-27 · 后端按功能拆模块 + LICENSE
+
+- **后端**：`backend/app.py` 从 3300 行拆成 ≈100 行的装配层（FastAPI 实例、异常处理器、中间件、include_router、
+  静态目录、首页）；共享函数/缓存/常量进 `backend/deps.py`；52 个路由按功能搬到 `backend/modules/` 下 16 个文件
+  （meta / projects / tables / columns / rows / events / comments / misc / export / images / apikeys / ingest /
+  imports / sync_api / views / dashboards）。路由函数体原样搬移，注册顺序与原文件一致。
+- 修拆分暴露的一个缓存 bug：`_META_GEN`/`_META_CNT` 是裸标量，`from deps import *` 后各模块拿到的是副本，
+  元信息缓存永不失效 → 改成 `_META_VERS = {'gen','cnt'}` 容器共享（回归里的「组名同步」抓到）。
+- **LICENSE**：新增，私有 / 保留所有权利（仅限内部使用，不对外授权）。
+- 上线前回归 **365 项断言**（拆分前在临时实例上跑通；路由集合与线上 openapi 逐一对比一致）。
+
 ## 2026-11-26 · 前端拆分 + 后端模块化样板
 
 - **前端**：`index.html` 里 6800 行的内联脚本按功能拆成 `frontend/js/` 下 12 个文件（core / shell / dialogs /
